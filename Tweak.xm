@@ -22,7 +22,6 @@ static const NSTimeInterval kMinAnalysisInterval = 0.3;
 // ==================== 双指长按呼出面板 ====================
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
-// 双指触发后 0.5 秒内忽略单指事件，防止双指抬起误判
 static NSDate *s_ignoreSingleTouchUntil = nil;
 
 // ==================== 规则存储 Key ====================
@@ -41,11 +40,13 @@ static UIWindow *getKeyWindow(void) {
     return nil;
 }
 
-// ==================== 独立悬浮窗 ====================
+// ==================== 独立悬浮窗（永不隐藏） ====================
 @class AdInspectorPanel;
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, weak) AdInspectorPanel *panel;
 @end
+
+static AdInspectorWindow *s_floatWindow = nil; // 全局引用
 
 @implementation AdInspectorWindow
 
@@ -54,8 +55,9 @@ static UIWindow *getKeyWindow(void) {
     if (self) {
         self.windowLevel = CGFLOAT_MAX;
         self.backgroundColor = [UIColor clearColor];
-        self.hidden = NO; // 始终显示（透明背景）
+        self.hidden = NO;
         self.userInteractionEnabled = YES;
+        s_floatWindow = self;
     }
     return self;
 }
@@ -63,7 +65,7 @@ static UIWindow *getKeyWindow(void) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self || (id)hitView == (id)self.panel) {
-        return nil; // 穿透背景和面板空白区
+        return nil;
     }
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
@@ -72,6 +74,18 @@ static UIWindow *getKeyWindow(void) {
         check = check.superview;
     }
     return nil;
+}
+
+- (void)setHidden:(BOOL)hidden {
+    // 禁止外部隐藏此窗口（除非显式退出）
+    if (!hidden || self.isHidden) {
+        [super setHidden:hidden];
+    }
+    // 如果尝试隐藏，强制显示
+    if (hidden) {
+        [super setHidden:NO];
+        NSLog(@"[AdInspectorWindow] 拒绝隐藏，保持显示");
+    }
 }
 @end
 
@@ -105,7 +119,7 @@ static UIWindow *getKeyWindow(void) {
         self.layer.borderColor = [UIColor cyanColor].CGColor;
         self.userInteractionEnabled = YES;
         self.clipsToBounds = NO;
-        self.hidden = YES; // 默认隐藏
+        self.hidden = YES;
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 120, 20)];
         title.text = @"🔍 AdInspector";
@@ -171,13 +185,25 @@ static UIWindow *getKeyWindow(void) {
 }
 
 - (void)forceShow {
-    // 确保父窗口可见
+    // 确保父窗口存在且可见
+    if (!self.superview) {
+        NSLog(@"[AdInspector] 警告：面板没有父窗口，尝试重新添加");
+        if (s_floatWindow) {
+            [s_floatWindow addSubview:self];
+            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            s_floatWindow.panel = self;
+        }
+    }
+    // 强制显示父窗口和自身
     if (self.superview) {
-        self.superview.hidden = NO; // 修复窗口被隐藏的问题
+        self.superview.hidden = NO;
+        self.superview.alpha = 1.0;
         [self.superview bringSubviewToFront:self];
     }
     self.hidden = NO;
-    NSLog(@"[AdInspector] 面板已呼出 (hidden=%d, superview=%@)", self.hidden, self.superview);
+    self.alpha = 1.0;
+    NSLog(@"[AdInspector] 面板已呼出 (窗口=%@, 面板=%@, superview=%@)", s_floatWindow, self, self.superview);
     showToast(@"👆 面板已呼出");
 }
 
@@ -191,7 +217,7 @@ static UIWindow *getKeyWindow(void) {
 }
 @end
 
-// ==================== Toast（显示在主窗口上） ====================
+// ==================== Toast ====================
 static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *hostWindow = getKeyWindow();
@@ -599,7 +625,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (touches.count >= 2) {
             BOOL allStationary = YES;
             for (UITouch *t in touches) {
-                if (t.phase != UITouchPhaseBegan && t.phase != UITouchPhaseStationary && t.phase != UITouchPhaseMoved) {
+                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
                     allStationary = NO; break;
                 }
             }
@@ -612,7 +638,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                     [panel forceShow];
                 }
                 s_twoFingerStart = nil;
-                // 设置冷却期，防止双指抬起触发单指分析
                 s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
             }
         } else {
@@ -623,7 +648,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (touches.count == 1) {
             UITouch *touch = [touches anyObject];
             if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
-                // 如果在冷却期，忽略此次单指事件
                 if (s_ignoreSingleTouchUntil && [[NSDate date] compare:s_ignoreSingleTouchUntil] == NSOrderedAscending) {
                     return;
                 }
@@ -652,19 +676,24 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             }
         }
         if (activeScene) {
-            AdInspectorWindow *floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
-            floatWindow.windowScene = activeScene;
+            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
+            s_floatWindow.windowScene = activeScene;
             AdInspectorPanel *panel = [AdInspectorPanel shared];
-            panel.frame = CGRectMake(5, 160, floatWindow.bounds.size.width - 10, 280);
+            panel.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
             panel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
-            [floatWindow addSubview:panel];
-            floatWindow.panel = panel;
-            floatWindow.hidden = NO;
+            [s_floatWindow addSubview:panel];
+            s_floatWindow.panel = panel;
+            s_floatWindow.hidden = NO;
         }
 
         showToast(@"🔍 已激活 | 点击“跳过”学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
+            // 确保窗口和面板始终在最前
+            if (s_floatWindow) {
+                s_floatWindow.hidden = NO;
+                s_floatWindow.alpha = 1.0;
+            }
             AdInspectorPanel *panel = [AdInspectorPanel shared];
             if (!panel.hidden && panel.superview) {
                 [panel.superview bringSubviewToFront:panel];
