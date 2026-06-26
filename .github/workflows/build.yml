@@ -7,23 +7,43 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
-    
+    runs-on: macos-14
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        
-      - name: Setup Theos Environment
-        run: |
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          
-      - name: Build Dylib
-        run: |
-          export THEOS=~/theos
-          make package FINALPACKAGE=1
-          
-      - name: Upload Dylib Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AdInspector-Dylib
-          path: packages/*.dylib
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install ldid (签名工具)
+      run: brew install ldid
+
+    - name: Clone Theos (仅核心，无 SDK 下载)
+      run: |
+        export THEOS=/opt/theos
+        sudo mkdir -p $THEOS
+        sudo chown -R $USER:staff $THEOS
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        # 确认安装完成
+        ls -l $THEOS/bin
+
+    - name: Build dylib
+      run: |
+        export THEOS=/opt/theos
+        make clean
+        make
+
+    - name: Verify output
+      run: |
+        echo "寻找生成的 dylib..."
+        find . -name "*.dylib" -type f
+        ls -lh AdInspector.dylib || echo "dylib 不在根目录，查找中..."
+        # 如果没找到，尝试从 .theos 复制
+        if [ ! -f AdInspector.dylib ]; then
+          cp .theos/obj/AdInspector.dylib . 2>/dev/null || cp .theos/obj/*/AdInspector.dylib . 2>/dev/null
+        fi
+        ls -lh AdInspector.dylib
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AdInspector.dylib
+        path: AdInspector.dylib
