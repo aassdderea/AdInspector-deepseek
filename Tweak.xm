@@ -18,45 +18,46 @@ static void showToast(NSString *message);
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
 
-// ==================== 双指长按呼出悬浮窗 ====================
+// ==================== 双指长按呼出面板 ====================
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
 
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
-// ==================== 悬浮窗（最高层级 + 触摸穿透） ====================
-@interface AdInspectorWindow : UIWindow
+// ==================== 悬浮面板（默认隐藏，双指呼出后保持可见） ====================
+@interface AdInspectorPanel : UIView
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
 + (instancetype)shared;
 - (void)showLog:(NSString *)log;
 - (void)forceShow;
+- (void)ensureOnTop;
 @end
 
-@implementation AdInspectorWindow
+@implementation AdInspectorPanel
 
 + (instancetype)shared {
-    static AdInspectorWindow *instance = nil;
+    static AdInspectorPanel *instance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        instance = [[AdInspectorWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        instance = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 160, [UIScreen mainScreen].bounds.size.width - 10, 280)];
     });
     return instance;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    CGFloat w = frame.size.width;
-    self = [super initWithFrame:CGRectMake(5, 80, w - 10, 280)];
+    self = [super initWithFrame:frame];
     if (self) {
-        self.windowLevel = CGFLOAT_MAX; // 永不被遮挡
         self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
         self.layer.cornerRadius = 10;
         self.layer.borderWidth = 1.5;
         self.layer.borderColor = [UIColor cyanColor].CGColor;
-        self.hidden = NO;
+        self.layer.zPosition = CGFLOAT_MAX; // 永在最前
+        self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
         self.userInteractionEnabled = YES;
         self.clipsToBounds = NO;
+        self.hidden = YES; // 默认隐藏
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 120, 20)];
         title.text = @"🔍 AdInspector";
@@ -65,14 +66,14 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
         title.tag = 1001;
         [self addSubview:title];
 
-        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-        close.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
-        [close setTitle:@"✕" forState:UIControlStateNormal];
-        [close setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
-        close.titleLabel.font = [UIFont boldSystemFontOfSize:20];
-        close.tag = 1002;
-        [close addTarget:self action:@selector(hideSelf) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:close];
+        UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        closeBtn.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
+        [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+        [closeBtn setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+        closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:20];
+        closeBtn.tag = 1002;
+        [closeBtn addTarget:self action:@selector(hidePanel) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:closeBtn];
 
         UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         clearBtn.frame = CGRectMake(self.bounds.size.width - 90, 3, 45, 30);
@@ -124,13 +125,8 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
     [pan setTranslation:CGPointZero inView:self];
 }
 
-- (void)hideSelf { self.hidden = YES; }
-
-- (void)forceShow {
-    self.hidden = NO;
-    // 移动到屏幕中央偏上方便查看
-    self.center = CGPointMake([UIScreen mainScreen].bounds.size.width/2, 200);
-    showToast(@"👆 悬浮窗已呼出");
+- (void)hidePanel {
+    self.hidden = YES;
 }
 
 - (void)clearRulesTapped {
@@ -139,13 +135,38 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
     showToast(@"🗑️ 规则已清除");
 }
 
+- (void)forceShow {
+    self.hidden = NO;
+    [self ensureOnTop];
+    showToast(@"👆 面板已呼出");
+}
+
+- (void)ensureOnTop {
+    // 确保面板始终在主窗口最顶层
+    UIWindow *keyWindow = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            keyWindow = [(UIWindowScene *)scene keyWindow];
+            break;
+        }
+    }
+    if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+    if (keyWindow && self.superview != keyWindow) {
+        [self removeFromSuperview];
+        [keyWindow addSubview:self];
+        self.frame = CGRectMake(5, 160, keyWindow.bounds.size.width - 10, self.bounds.size.height);
+    }
+    [keyWindow bringSubviewToFront:self];
+    self.layer.zPosition = CGFLOAT_MAX;
+}
+
 - (void)showLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.logBuffer appendString:log];
         if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)];
         self.logTextView.text = self.logBuffer;
         if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)];
-        self.hidden = NO;
+        // 不自动显示面板，保持隐藏状态，日志已缓存
     });
 }
 @end
@@ -153,7 +174,7 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 // ==================== Toast ====================
 static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        AdInspectorWindow *inspector = [AdInspectorWindow shared];
+        AdInspectorPanel *panel = [AdInspectorPanel shared];
         UIView *toast = [[UIView alloc] init];
         toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
         toast.layer.cornerRadius = 12;
@@ -168,10 +189,9 @@ static void showToast(NSString *message) {
         CGRect textRect = [message boundingRectWithSize:maxSize options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: label.font} context:nil];
         CGFloat w = textRect.size.width + 30, h = textRect.size.height + 16;
         label.frame = CGRectMake(15, 8, textRect.size.width, textRect.size.height);
-        CGPoint screenCenter = CGPointMake([UIScreen mainScreen].bounds.size.width/2, [UIScreen mainScreen].bounds.size.height - 150);
-        CGPoint centerInWindow = [inspector convertPoint:screenCenter fromView:nil];
-        toast.frame = CGRectMake(centerInWindow.x - w/2, centerInWindow.y - h/2, w, h);
-        [inspector addSubview:toast];
+        CGPoint center = CGPointMake(panel.bounds.size.width/2, panel.bounds.size.height - 40);
+        toast.frame = CGRectMake(center.x - w/2, center.y - h/2, w, h);
+        [panel addSubview:toast];
         [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
             toast.alpha = 0;
         } completion:^(BOOL finished) {
@@ -180,7 +200,7 @@ static void showToast(NSString *message) {
     });
 }
 
-// ==================== 工具函数 ====================
+// ==================== 工具函数（完整实现） ====================
 static NSString *getControlEventName(UIControlEvents e) {
     switch (e) {
         case UIControlEventTouchDown: return @"TouchDown";
@@ -274,7 +294,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 增强触发（含强制手势状态） ====================
+// ==================== 自动跳过（增强版） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *triggerType = rule[@"triggerType"];
     if ([triggerType isEqualToString:@"controlEvent"]) {
@@ -285,13 +305,11 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 手势类型
     NSString *gestureClass = rule[@"gestureClass"];
     UIView *cur = view;
     while (cur) {
         for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
             if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                // 优先尝试 target/action
                 if (rule[@"targetClass"] && rule[@"actionSelector"]) {
                     SEL action = NSSelectorFromString(rule[@"actionSelector"]);
                     @try {
@@ -307,22 +325,24 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                     } @catch (NSException *e) {}
                 }
                 // 强制触发手势
-                [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"_state"];
-                showToast(@"⏩ 已自动跳过 (强制)");
+                [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (!view.window || view.window.hidden) return;
+                    view.window.hidden = YES;
+                    showToast(@"⏩ 已强制关闭广告窗口");
+                });
                 return;
             }
         }
         cur = cur.superview;
     }
 
-    // 兜底：UIControl 事件
-    if ([view isKindOfClass:[UIControl class]]) {
-        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
-        showToast(@"⏩ 已自动跳过 (兜底)");
+    if (view.window) {
+        view.window.hidden = YES;
+        showToast(@"⏩ 已强制关闭广告窗口");
     }
 }
 
-// ==================== 自动跳过扫描 ====================
 static void applyAllSavedRules(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *rules = [ud arrayForKey:kRulesKey];
@@ -342,7 +362,7 @@ static void applyAllSavedRules(void) {
     }
 }
 
-// ==================== 辅助：递归查找“跳过”标签 ====================
+// ==================== 辅助查找“跳过”文字 ====================
 static UIView *findSkipLabelInView(UIView *root) {
     if ([root isKindOfClass:[UIButton class]]) {
         NSString *t = [(UIButton *)root titleForState:UIControlStateNormal];
@@ -359,14 +379,13 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（强化学习） ====================
+// ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
     s_lastAnalysisTime = now;
 
-    // 自动寻找“跳过”文字标签
     UIView *actualView = findSkipLabelInView(view);
     if (!actualView) actualView = view;
 
@@ -375,7 +394,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
 
-        // 层级链
         NSMutableArray *chainArray = [NSMutableArray array];
         UIView *cur = actualView;
         while (cur && ![cur isKindOfClass:[UIWindow class]]) {
@@ -408,7 +426,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             depth++;
         }
 
-        // Target-Action & 手势
         [out appendString:@"\n🎯 Target-Action & 手势:\n"];
         BOOL found = NO;
         NSMutableArray *taInfo = [NSMutableArray array];
@@ -458,7 +475,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
 
-        // 诊断信息
         [out appendString:@"\n🔍 诊断信息:\n"];
         [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])];
         [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)];
@@ -475,11 +491,11 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         while (r && rc < 6) { [out appendFormat:@"→%@ ", NSStringFromClass([r class])]; r = r.nextResponder; rc++; }
         [out appendString:@"\n══════════════════════════\n"];
 
-        [[AdInspectorWindow shared] showLog:out];
+        [[AdInspectorPanel shared] showLog:out];
         saveToFile(out);
         highlightView(actualView);
 
-        // ====== 学习规则 ======
+        // 学习规则
         NSString *buttonText = nil;
         if ([actualView isKindOfClass:[UIButton class]]) buttonText = [(UIButton *)actualView titleForState:UIControlStateNormal];
         else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text];
@@ -535,48 +551,45 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 
         if (hasRule) saveRule(rule);
         else showToast(@"❌ 无法学习触发方式");
+
     } @catch (NSException *e) {
         showToast(@"⚠️ 分析异常");
     }
 }
 
-// ==================== Hook UIApplication sendEvent:（含双指检测） ====================
+// ==================== Hook UIApplication sendEvent:（双指呼出） ====================
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)event {
     %orig;
     if (event.type == UIEventTypeTouches) {
         NSSet *touches = [event allTouches];
 
-        // 双指检测：用于呼出悬浮窗
         if (touches.count >= 2) {
-            BOOL allBegan = YES;
+            BOOL allStationary = YES;
             for (UITouch *t in touches) {
-                if (t.phase != UITouchPhaseBegan && t.phase != UITouchPhaseStationary) {
-                    allBegan = NO;
+                if (t.phase != UITouchPhaseBegan && t.phase != UITouchPhaseStationary && t.phase != UITouchPhaseMoved) {
+                    allStationary = NO;
                     break;
                 }
             }
-            if (allBegan && !s_twoFingerStart) {
+            if (allStationary && !s_twoFingerStart) {
                 s_twoFingerStart = [NSDate date];
             }
             if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
-                // 呼出悬浮窗
-                [[AdInspectorWindow shared] forceShow];
-                s_twoFingerStart = nil; // 重置，防止连续呼出
+                AdInspectorPanel *panel = [AdInspectorPanel shared];
+                if (panel.hidden) {
+                    [panel forceShow];
+                }
+                s_twoFingerStart = nil;
             }
         } else {
-            // 单指或离开，重置计时
             s_twoFingerStart = nil;
         }
 
-        // 单指分析（仅当不再有双指呼出可能）
         if (touches.count == 1) {
             UITouch *touch = [touches anyObject];
-            if (touch.phase == UITouchPhaseEnded && touch.view) {
-                // 确保不是刚刚呼出悬浮窗导致的误触
-                if (!s_twoFingerStart) {
-                    analyzeTouchView(touch.view, [touch locationInView:nil]);
-                }
+            if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
+                analyzeTouchView(touch.view, [touch locationInView:nil]);
             }
         }
     }
@@ -590,15 +603,32 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 }
 %end
 
+// ==================== 初始化（默认隐藏面板） ====================
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [AdInspectorWindow shared];
-        showToast(@"🔍 AdInspector 已激活\n双指长按屏幕呼出面板");
+        UIWindow *keyWindow = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                keyWindow = [(UIWindowScene *)scene keyWindow];
+                break;
+            }
+        }
+        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+        if (keyWindow) {
+            AdInspectorPanel *panel = [AdInspectorPanel shared];
+            [keyWindow addSubview:panel];
+            panel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            panel.hidden = YES; // 确保隐藏
+        }
+
+        showToast(@"🔍 已激活 | 点击“跳过”学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
+            // 同时确保面板仍在顶层（如果已显示）
+            AdInspectorPanel *panel = [AdInspectorPanel shared];
+            if (!panel.hidden) {
+                [panel ensureOnTop];
+            }
         }];
-        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
-        NSString *prefsPath = [paths.firstObject stringByAppendingPathComponent:@"Preferences"];
-        NSLog(@"[AdInspector] 规则存储目录: %@", prefsPath);
     });
 }
