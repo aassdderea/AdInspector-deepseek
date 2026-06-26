@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 
 // ==================== 前置声明 ====================
 static NSString *getControlEventName(UIControlEvents event);
@@ -8,14 +7,16 @@ static void saveToFile(NSString *log);
 static void analyzeTouchView(UIView *view, CGPoint touchPoint);
 static void highlightView(UIView *view);
 static void autoCheckAndSkipAd(void);
-static void learnRuleFromView(UIView *view, NSDictionary *report);
+static void saveRule(NSDictionary *rule);
 static void applyAllSavedRules(void);
+static UIView *findMatchingView(UIView *root, NSDictionary *rule);
+static void triggerSkip(UIView *view, NSDictionary *rule);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
 
-// ==================== 规则存储 ====================
+// ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
 // ==================== 悬浮窗 ====================
@@ -111,14 +112,17 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 @end
 
-// ==================== 工具函数 ====================
+// ==================== 工具函数实现 ====================
 
 static NSString *getControlEventName(UIControlEvents e) {
     switch (e) {
         case UIControlEventTouchDown: return @"TouchDown";
         case UIControlEventTouchDownRepeat: return @"TouchDownRepeat";
+        case UIControlEventTouchDragInside: return @"DragInside";
+        case UIControlEventTouchDragOutside: return @"DragOutside";
         case UIControlEventTouchUpInside: return @"TouchUpInside";
         case UIControlEventTouchUpOutside: return @"TouchUpOutside";
+        case UIControlEventTouchCancel: return @"TouchCancel";
         case UIControlEventValueChanged: return @"ValueChanged";
         case UIControlEventPrimaryActionTriggered: return @"PrimaryAction";
         case UIControlEventEditingDidBegin: return @"EditingBegin";
@@ -164,7 +168,120 @@ static void highlightView(UIView *view) {
     });
 }
 
-// ==================== 分析点击（含信息收集与学习） ====================
+// ==================== 规则管理（C 函数） ====================
+
+static void saveRule(NSDictionary *rule) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *existing = [ud arrayForKey:kRulesKey] ?: @[];
+    // 简单去重
+    for (NSDictionary *r in existing) {
+        if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] &&
+            [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] &&
+            [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) {
+            return;
+        }
+    }
+    NSMutableArray *newRules = [existing mutableCopy];
+    [newRules addObject:rule];
+    [ud setObject:newRules forKey:kRulesKey];
+    [ud synchronize];
+    NSLog(@"[AdInspector] 规则已保存: %@", rule);
+}
+
+static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
+    NSString *targetClass = rule[@"buttonClass"];
+    NSString *textPattern = rule[@"buttonTextPattern"];
+    NSArray *chain = rule[@"hierarchyChain"];
+
+    if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
+        NSString *currentText = nil;
+        if ([root isKindOfClass:[UIButton class]]) {
+            currentText = [(UIButton *)root titleForState:UIControlStateNormal];
+        } else if ([root isKindOfClass:[UILabel class]]) {
+            currentText = [(UILabel *)root text];
+        }
+        if (currentText && [currentText hasPrefix:textPattern]) {
+            // 验证层级链
+            NSMutableArray *currentChain = [NSMutableArray array];
+            UIView *cur = root;
+            while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+                [currentChain addObject:NSStringFromClass([cur class])];
+                cur = cur.superview;
+            }
+            if ([currentChain isEqualToArray:chain]) {
+                return root;
+            }
+        }
+    }
+    for (UIView *sub in root.subviews) {
+        UIView *found = findMatchingView(sub, rule);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void triggerSkip(UIView *view, NSDictionary *rule) {
+    NSString *triggerType = rule[@"triggerType"];
+    if ([triggerType isEqualToString:@"controlEvent"]) {
+        if ([view isKindOfClass:[UIControl class]]) {
+            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
+            [(UIControl *)view sendActionsForControlEvents:events];
+        }
+    } else if ([triggerType isEqualToString:@"gesture"]) {
+        NSString *gestureClass = rule[@"gestureClass"];
+        NSString *actionStr = rule[@"actionSelector"];
+        NSString *targetClass = rule[@"targetClass"];
+        SEL action = NSSelectorFromString(actionStr);
+        UIView *cur = view;
+        while (cur) {
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                    @try {
+                        NSArray *targets = [gr valueForKey:@"_targets"];
+                        for (id t in targets) {
+                            if ([t isKindOfClass:[NSArray class]] && [t count] >= 2) {
+                                id target = t[0];
+                                if ([NSStringFromClass([target class]) isEqualToString:targetClass]) {
+                                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                                    return;
+                                }
+                            }
+                        }
+                    } @catch (NSException *e) {}
+                }
+            }
+            cur = cur.superview;
+        }
+        // fallback
+        if ([view isKindOfClass:[UIControl class]]) {
+            [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+        }
+    }
+}
+
+static void applyAllSavedRules(void) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *rules = [ud arrayForKey:kRulesKey];
+    if (!rules.count) return;
+
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        for (UIWindow *window in windowScene.windows) {
+            for (NSDictionary *rule in rules) {
+                UIView *matched = findMatchingView(window, rule);
+                if (matched) {
+                    NSLog(@"[AutoSkip] 规则匹配成功，自动跳过: %@", rule[@"buttonTextPattern"]);
+                    triggerSkip(matched, rule);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ==================== 分析点击（含学习） ====================
+
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     NSDate *now = [NSDate date];
@@ -176,17 +293,15 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
 
-        // ---- 构建层级链（用于日志和规则学习） ----
+        // 层级链
         NSMutableArray *chainArray = [NSMutableArray array];
         UIView *cur = view;
         while (cur && ![cur isKindOfClass:[UIWindow class]]) {
             [chainArray addObject:NSStringFromClass([cur class])];
             cur = cur.superview;
         }
-        // 记录窗口类（若存在）
         NSString *windowClass = cur ? NSStringFromClass([cur class]) : @"";
 
-        // 输出层级链
         [out appendString:@"📊 视图层级链:\n"];
         cur = view;
         int depth = 0;
@@ -213,7 +328,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             depth++;
         }
 
-        // ---- 收集 targetActions 信息 ----
+        // Target-Action 信息
         [out appendString:@"\n🎯 Target-Action & 手势:\n"];
         BOOL found = NO;
         NSMutableArray *taInfo = [NSMutableArray array];
@@ -257,7 +372,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                         NSArray *tgts = [gr valueForKey:@"_targets"];
                         for (id t in tgts) {
                             [out appendFormat:@"    → %@\n", t];
-                            // 尝试提取target/action
                             if ([t isKindOfClass:[NSArray class]] && [t count] >= 2) {
                                 id target = t[0];
                                 id actionObj = t[1];
@@ -308,8 +422,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         saveToFile(out);
         highlightView(view);
 
-        // ====== 学习规则 ======
-        // 提取按钮文本（用于模式匹配）
+        // 学习规则
         NSString *buttonText = nil;
         if ([view isKindOfClass:[UIButton class]]) {
             buttonText = [(UIButton *)view titleForState:UIControlStateNormal];
@@ -320,12 +433,10 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 
         NSMutableDictionary *rule = [NSMutableDictionary dictionary];
         rule[@"buttonClass"] = NSStringFromClass([view class]);
-        rule[@"buttonTextPattern"] = buttonText; // 可优化为正则，简单用前缀匹配
-        rule[@"hierarchyChain"] = chainArray;     // 从按钮到窗口的类名链
+        rule[@"buttonTextPattern"] = buttonText;
+        rule[@"hierarchyChain"] = chainArray;
         rule[@"windowClass"] = windowClass;
 
-        // 查找最佳触发方式
-        // 优先使用 UIControl 的 TouchUpInside
         BOOL hasControlEvent = NO;
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
@@ -336,7 +447,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             }
         }
         if (!hasControlEvent) {
-            // 尝试手势
             for (NSDictionary *info in taInfo) {
                 if (info[@"gestureClass"] && info[@"targetClass"] && info[@"action"]) {
                     rule[@"triggerType"] = @"gesture";
@@ -349,144 +459,23 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             }
         }
         if (!hasControlEvent) {
-            // 兜底：尝试直接对按钮发送 TouchUpInside（如果是 UIControl）
             if ([view isKindOfClass:[UIControl class]]) {
                 rule[@"triggerType"] = @"controlEvent";
                 rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
             } else {
-                // 实在找不到触发方式，不保存规则
                 NSLog(@"[AdInspector] 未能识别触发方式，不学习此按钮");
                 return;
             }
         }
 
-        // 保存规则
-        [self saveRule:rule];
-        NSLog(@"[AdInspector] 已学习新规则: %@", rule);
+        saveRule(rule);
 
     } @catch (NSException *e) {
         NSLog(@"[AdInspector] 分析异常: %@", e);
     }
 }
 
-// ==================== 规则管理 ====================
-+ (void)saveRule:(NSDictionary *)rule {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *existing = [ud arrayForKey:kRulesKey] ?: @[];
-    // 简单去重：比较 buttonClass + buttonTextPattern + hierarchyChain
-    for (NSDictionary *r in existing) {
-        if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] &&
-            [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] &&
-            [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) {
-            return; // 已存在
-        }
-    }
-    NSMutableArray *newRules = [existing mutableCopy];
-    [newRules addObject:rule];
-    [ud setObject:newRules forKey:kRulesKey];
-    [ud synchronize];
-}
-
-static void applyAllSavedRules(void) {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *rules = [ud arrayForKey:kRulesKey];
-    if (!rules.count) return;
-
-    // 遍历所有窗口场景
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-            for (NSDictionary *rule in rules) {
-                UIView *matched = findMatchingView(window, rule);
-                if (matched) {
-                    NSLog(@"[AutoSkip] 规则匹配成功，自动跳过: %@", rule[@"buttonTextPattern"]);
-                    triggerSkip(matched, rule);
-                    break; // 一个窗口只跳一次
-                }
-            }
-        }
-    }
-}
-
-static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
-    // 递归查找匹配的按钮
-    NSString *targetClass = rule[@"buttonClass"];
-    NSString *textPattern = rule[@"buttonTextPattern"];
-    NSArray *chain = rule[@"hierarchyChain"];
-
-    // 如果当前视图符合类名，且文本匹配，并验证层级链
-    if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
-        NSString *currentText = nil;
-        if ([root isKindOfClass:[UIButton class]]) {
-            currentText = [(UIButton *)root titleForState:UIControlStateNormal];
-        } else if ([root isKindOfClass:[UILabel class]]) {
-            currentText = [(UILabel *)root text];
-        }
-        if (currentText && [currentText hasPrefix:textPattern]) {
-            // 验证层级链（从该视图向上直到窗口，排除窗口自身）
-            NSMutableArray *currentChain = [NSMutableArray array];
-            UIView *cur = root;
-            while (cur && ![cur isKindOfClass:[UIWindow class]]) {
-                [currentChain addObject:NSStringFromClass([cur class])];
-                cur = cur.superview;
-            }
-            if ([currentChain isEqualToArray:chain]) {
-                return root;
-            }
-        }
-    }
-
-    // 递归子视图
-    for (UIView *sub in root.subviews) {
-        UIView *found = findMatchingView(sub, rule);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static void triggerSkip(UIView *view, NSDictionary *rule) {
-    NSString *triggerType = rule[@"triggerType"];
-    if ([triggerType isEqualToString:@"controlEvent"]) {
-        if ([view isKindOfClass:[UIControl class]]) {
-            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
-            [(UIControl *)view sendActionsForControlEvents:events];
-        }
-    } else if ([triggerType isEqualToString:@"gesture"]) {
-        // 在父视图链中查找对应手势
-        NSString *gestureClass = rule[@"gestureClass"];
-        NSString *actionStr = rule[@"actionSelector"];
-        NSString *targetClass = rule[@"targetClass"];
-        SEL action = NSSelectorFromString(actionStr);
-        UIView *cur = view;
-        while (cur) {
-            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
-                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                    @try {
-                        NSArray *targets = [gr valueForKey:@"_targets"];
-                        for (id t in targets) {
-                            if ([t isKindOfClass:[NSArray class]] && [t count] >= 2) {
-                                id target = t[0];
-                                if ([NSStringFromClass([target class]) isEqualToString:targetClass]) {
-                                    // 调用 action
-                                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
-                                    return;
-                                }
-                            }
-                        }
-                    } @catch (NSException *e) {}
-                }
-            }
-            cur = cur.superview;
-        }
-        // fallback: 如果没找到手势target，尝试对view发送controlEvent（若是UIControl）
-        if ([view isKindOfClass:[UIControl class]]) {
-            [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
-        }
-    }
-}
-
-// ==================== Hook 部分 ====================
+// ==================== Hook 实现 ====================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig;
@@ -519,12 +508,10 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         [AdInspectorWindow shared];
         NSLog(@"[AdInspector] ✅ 自学习广告跳过插件已激活");
 
-        // 每0.5秒检查广告
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
         }];
 
-        // 日志头
         @try {
             NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
             if (paths.count > 0) {
