@@ -13,34 +13,29 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install ldid (签名工具)
+    - name: Install ldid
       run: brew install ldid
 
-    - name: Clone Theos (仅核心，无 SDK 下载)
+    - name: Clone Theos
       run: |
         export THEOS=/opt/theos
         sudo mkdir -p $THEOS
         sudo chown -R $USER:staff $THEOS
         git clone --recursive https://github.com/theos/theos.git $THEOS
-        # 确认安装完成
-        ls -l $THEOS/bin
 
     - name: Build dylib
       run: |
         export THEOS=/opt/theos
+        # 确保环境变量与 Makefile 一致
+        export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+        export PREFIX=$SDKROOT/usr/
         make clean
         make
 
     - name: Verify output
       run: |
-        echo "寻找生成的 dylib..."
-        find . -name "*.dylib" -type f
-        ls -lh AdInspector.dylib || echo "dylib 不在根目录，查找中..."
-        # 如果没找到，尝试从 .theos 复制
-        if [ ! -f AdInspector.dylib ]; then
-          cp .theos/obj/AdInspector.dylib . 2>/dev/null || cp .theos/obj/*/AdInspector.dylib . 2>/dev/null
-        fi
-        ls -lh AdInspector.dylib
+        ls -lh AdInspector.dylib || (cp .theos/obj/AdInspector.dylib . 2>/dev/null || cp .theos/obj/*/AdInspector.dylib .)
+        file AdInspector.dylib
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
