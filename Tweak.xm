@@ -332,14 +332,17 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
     if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
         NSString *currentText = nil;
         if ([root isKindOfClass:[UIButton class]]) currentText = [(UIButton *)root titleForState:UIControlStateNormal];
-        else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text];
+        else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
+        else currentText = root.accessibilityLabel;
+
         if (currentText) {
             BOOL textMatches = NO;
-            // 短文本（如“×”）精确匹配，其他情况前缀匹配
             if (textPattern.length <= 2) {
                 textMatches = [currentText isEqualToString:textPattern];
             } else {
-                textMatches = [currentText hasPrefix:textPattern];
+                // 自动跳过时采用包含匹配，容忍数字变化
+                textMatches = ([currentText rangeOfString:textPattern].location != NSNotFound &&
+                               currentText.length <= 15);
             }
             if (textMatches) {
                 NSMutableArray *currentChain = [NSMutableArray array];
@@ -364,7 +367,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过（保护插件窗口） ====================
+// ==================== 自动跳过 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -438,13 +441,15 @@ static void applyAllSavedRules(void) {
     }
 }
 
-// ==================== 辅助查找跳过按钮（支持多种关键词） ====================
+// ==================== 增强的跳过按钮识别 ====================
 static BOOL isSkipText(NSString *text) {
     if (!text || text.length == 0) return NO;
     // 常见跳过关键词
-    NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X"];
+    NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"];
     for (NSString *keyword in keywords) {
-        if ([text isEqualToString:keyword] || [text hasPrefix:keyword]) {
+        // 包含匹配，但限制总长度避免误判（跳过按钮文本通常不超过15字符）
+        if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound &&
+            text.length <= 15) {
             return YES;
         }
     }
@@ -453,14 +458,22 @@ static BOOL isSkipText(NSString *text) {
 
 static UIView *findSkipLabelInView(UIView *root) {
     if ([root isKindOfClass:[AdInspectorPanel class]]) return nil;
+    
+    // 先检查当前视图文本
+    NSString *currentText = nil;
     if ([root isKindOfClass:[UIButton class]]) {
-        NSString *t = [(UIButton *)root titleForState:UIControlStateNormal];
-        if (isSkipText(t)) return root;
+        currentText = [(UIButton *)root titleForState:UIControlStateNormal];
+    } else if ([root isKindOfClass:[UILabel class]]) {
+        currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
     }
-    if ([root isKindOfClass:[UILabel class]]) {
-        NSString *t = [(UILabel *)root text];
-        if (isSkipText(t)) return root;
+    if (!currentText) {
+        currentText = root.accessibilityLabel;
     }
+    if (isSkipText(currentText)) {
+        return root;
+    }
+
+    // 递归子视图
     for (UIView *sub in root.subviews) {
         UIView *found = findSkipLabelInView(sub);
         if (found) return found;
@@ -512,7 +525,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                 if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
             }
             if ([cur isKindOfClass:[UILabel class]]) {
-                NSString *t = [(UILabel *)cur text];
+                NSString *t = [(UILabel *)cur text] ?: [(UILabel *)cur attributedText].string;
                 if (t.length > 20) t = [[t substringToIndex:20] stringByAppendingString:@"..."];
                 if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
             }
@@ -595,7 +608,8 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         // 学习规则
         NSString *buttonText = nil;
         if ([actualView isKindOfClass:[UIButton class]]) buttonText = [(UIButton *)actualView titleForState:UIControlStateNormal];
-        else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text];
+        else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text] ?: [(UILabel *)actualView attributedText].string;
+        if (buttonText.length == 0) buttonText = actualView.accessibilityLabel;
         if (buttonText.length == 0) {
             showToast(@"⚠️ 按钮无文字，学习失败");
             return;
@@ -723,7 +737,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow.hidden = NO;
         }
 
-        showToast(@"🔍 已激活 | 点击“跳过/广告/关闭”学习 | 双指长按呼出面板");
+        showToast(@"🔍 已激活 | 点击跳过/广告/关闭学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
             if (s_floatWindow) {
