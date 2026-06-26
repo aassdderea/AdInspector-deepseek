@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h> 
 
 // ==================== 前置声明 ====================
 static NSString *getControlEventName(UIControlEvents event);
