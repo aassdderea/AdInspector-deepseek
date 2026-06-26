@@ -22,11 +22,13 @@ static const NSTimeInterval kMinAnalysisInterval = 0.3;
 // ==================== 双指长按呼出面板 ====================
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
+// 双指触发后 0.5 秒内忽略单指事件，防止双指抬起误判
+static NSDate *s_ignoreSingleTouchUntil = nil;
 
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
-// ==================== 获取当前 keyWindow ====================
+// ==================== 获取 keyWindow ====================
 static UIWindow *getKeyWindow(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
@@ -52,7 +54,7 @@ static UIWindow *getKeyWindow(void) {
     if (self) {
         self.windowLevel = CGFLOAT_MAX;
         self.backgroundColor = [UIColor clearColor];
-        self.hidden = NO;
+        self.hidden = NO; // 始终显示（透明背景）
         self.userInteractionEnabled = YES;
     }
     return self;
@@ -61,7 +63,7 @@ static UIWindow *getKeyWindow(void) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self || (id)hitView == (id)self.panel) {
-        return nil; // 穿透背景
+        return nil; // 穿透背景和面板空白区
     }
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
@@ -103,7 +105,7 @@ static UIWindow *getKeyWindow(void) {
         self.layer.borderColor = [UIColor cyanColor].CGColor;
         self.userInteractionEnabled = YES;
         self.clipsToBounds = NO;
-        self.hidden = YES;
+        self.hidden = YES; // 默认隐藏
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 120, 20)];
         title.text = @"🔍 AdInspector";
@@ -169,9 +171,13 @@ static UIWindow *getKeyWindow(void) {
 }
 
 - (void)forceShow {
+    // 确保父窗口可见
+    if (self.superview) {
+        self.superview.hidden = NO; // 修复窗口被隐藏的问题
+        [self.superview bringSubviewToFront:self];
+    }
     self.hidden = NO;
-    if (self.superview) [self.superview bringSubviewToFront:self];
-    NSLog(@"[AdInspector] 面板已呼出");
+    NSLog(@"[AdInspector] 面板已呼出 (hidden=%d, superview=%@)", self.hidden, self.superview);
     showToast(@"👆 面板已呼出");
 }
 
@@ -185,7 +191,7 @@ static UIWindow *getKeyWindow(void) {
 }
 @end
 
-// ==================== Toast（永远显示在主窗口上） ====================
+// ==================== Toast（显示在主窗口上） ====================
 static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *hostWindow = getKeyWindow();
@@ -606,15 +612,21 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                     [panel forceShow];
                 }
                 s_twoFingerStart = nil;
+                // 设置冷却期，防止双指抬起触发单指分析
+                s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
             }
         } else {
             s_twoFingerStart = nil;
         }
 
-        // 单指分析（仅当抬起且不处于双指状态）
+        // 单指分析（仅当抬起且不在冷却期）
         if (touches.count == 1) {
             UITouch *touch = [touches anyObject];
             if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
+                // 如果在冷却期，忽略此次单指事件
+                if (s_ignoreSingleTouchUntil && [[NSDate date] compare:s_ignoreSingleTouchUntil] == NSOrderedAscending) {
+                    return;
+                }
                 analyzeTouchView(touch.view, [touch locationInView:nil]);
             }
         }
