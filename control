@@ -1,0 +1,8 @@
+Package: com.youradinspector.tweak
+Name: AdInspector
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: 广告按钮点击分析插件 - 获取视图层级、target-action 绑定和诊断信息
+Maintainer: YourName
+Author: YourName
+Section: Tweaks
