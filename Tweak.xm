@@ -1,213 +1,336 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// ================= 安全的手势 Target-Action 解析 =================
-static NSArray<NSString *> *extractGestureActions(UIGestureRecognizer *gr) {
-    NSMutableArray *results = [NSMutableArray array];
-    @try {
-        NSArray *targets = [gr valueForKey:@"_targets"];
-        for (id targetInfo in targets) {
-            id target = [targetInfo valueForKey:@"_target"];
-            id actionObj = [targetInfo valueForKey:@"_action"];
-            
-            SEL action = NULL;
-            if ([actionObj isKindOfClass:[NSValue class]]) {
-                action = (SEL)[(NSValue *)actionObj pointerValue];
-            } else if ([actionObj isKindOfClass:[NSString class]]) {
-                action = NSSelectorFromString((NSString *)actionObj);
-            }
-            
-            if (target && action) {
-                [results addObject:[NSString stringWithFormat:@"[Gesture:%@] %@ -> %@",
-                                    NSStringFromClass([gr class]),
-                                    target,
-                                    NSStringFromSelector(action)]];
-            }
-        }
-    } @catch (NSException *e) {
-        [results addObject:[NSString stringWithFormat:@"[Gesture:%@] (解析异常)", NSStringFromClass([gr class])]];
-    }
-    return results;
+// ==================== 工具函数前置声明 ====================
+static NSString *getControlEventName(UIControlEvents event);
+static void saveToFile(NSString *log);
+static void analyzeTouchView(UIView *view, CGPoint touchPoint);
+static void highlightView(UIView *view);
+
+// ==================== 分析防抖 ====================
+static NSDate *s_lastAnalysisTime = nil;
+static const NSTimeInterval kMinAnalysisInterval = 0.3;
+
+// ==================== 悬浮窗 ====================
+@interface AdInspectorWindow : UIWindow
+@property (nonatomic, strong) UITextView *logTextView;
+@property (nonatomic, strong) NSMutableString *logBuffer;
++ (instancetype)shared;
+- (void)showLog:(NSString *)log;
+@end
+
+@implementation AdInspectorWindow
+
++ (instancetype)shared {
+    static AdInspectorWindow *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[AdInspectorWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    });
+    return instance;
 }
 
-// ================= 顶层 Toast 单例 =================
-static UIWindow *g_toastWindow = nil;
-static UILabel *g_toastLabel = nil;
-static dispatch_block_t g_hideBlock = nil;
+- (instancetype)initWithFrame:(CGRect)frame {
+    CGFloat w = frame.size.width;
+    self = [super initWithFrame:CGRectMake(5, 80, w - 10, 280)];
+    if (self) {
+        self.windowLevel = UIWindowLevelAlert + 999;
+        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
+        self.layer.cornerRadius = 10;
+        self.layer.borderWidth = 1.5;
+        self.layer.borderColor = [UIColor cyanColor].CGColor;
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.layer.shadowOffset = CGSizeMake(0, 2);
+        self.layer.shadowOpacity = 0.6;
+        self.hidden = NO;
+        self.userInteractionEnabled = YES;
+        self.clipsToBounds = NO;
+        
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 20)];
+        title.text = @"🔍 AdInspector";
+        title.textColor = [UIColor cyanColor];
+        title.font = [UIFont boldSystemFontOfSize:14];
+        [self addSubview:title];
+        
+        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+        close.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
+        [close setTitle:@"✕" forState:UIControlStateNormal];
+        [close setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+        close.titleLabel.font = [UIFont boldSystemFontOfSize:20];
+        [close addTarget:self action:@selector(hideSelf) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:close];
+        
+        UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(self.bounds.size.width/2 - 15, 4, 30, 4)];
+        handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6];
+        handle.layer.cornerRadius = 2;
+        [self addSubview:handle];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+        [self addGestureRecognizer:pan];
+        
+        CGFloat tvY = 32;
+        self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, tvY, self.bounds.size.width - 10, self.bounds.size.height - tvY - 5)];
+        self.logTextView.backgroundColor = [UIColor clearColor];
+        self.logTextView.textColor = [UIColor greenColor];
+        self.logTextView.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
+        self.logTextView.editable = NO;
+        self.logTextView.selectable = YES;
+        self.logTextView.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+        self.logTextView.textContainerInset = UIEdgeInsetsMake(2, 2, 2, 2);
+        [self addSubview:self.logTextView];
+        
+        self.logBuffer = [NSMutableString string];
+    }
+    return self;
+}
 
-static void showTopLevelToast(NSString *message) {
+- (void)handlePan:(UIPanGestureRecognizer *)pan {
+    CGPoint t = [pan translationInView:self];
+    self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
+    [pan setTranslation:CGPointZero inView:self];
+}
+
+- (void)hideSelf {
+    self.hidden = YES;
+}
+
+- (void)showLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            if (!g_toastWindow) {
-                g_toastWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-                g_toastWindow.windowLevel = UIWindowLevelAlert + 999.f;
-                g_toastWindow.backgroundColor = [UIColor clearColor];
-                g_toastWindow.userInteractionEnabled = NO;
-                
-                g_toastLabel = [[UILabel alloc] init];
-                g_toastLabel.numberOfLines = 0;
-                g_toastLabel.font = [UIFont systemFontOfSize:14];
-                g_toastLabel.textColor = [UIColor whiteColor];
-                g_toastLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-                g_toastLabel.layer.cornerRadius = 12;
-                g_toastLabel.clipsToBounds = YES;
-                g_toastLabel.textAlignment = NSTextAlignmentCenter;
-                [g_toastWindow addSubview:g_toastLabel];
-            }
-            
-            CGFloat maxWidth = g_toastWindow.bounds.size.width - 40;
-            CGRect textRect = [message boundingRectWithSize:CGSizeMake(maxWidth, CGFLOAT_MAX)
-                                                    options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                 attributes:@{NSFontAttributeName: g_toastLabel.font}
-                                                    context:nil];
-            g_toastLabel.frame = CGRectMake(0, 0, textRect.size.width + 30, textRect.size.height + 20);
-            g_toastLabel.center = CGPointMake(g_toastWindow.center.x, g_toastWindow.bounds.size.height - 150);
-            g_toastLabel.text = message;
-            g_toastWindow.hidden = NO;
-            
-            if (g_hideBlock) {
-                dispatch_block_cancel(g_hideBlock);
-                g_hideBlock = nil;
-            }
-            g_hideBlock = dispatch_block_create(0, ^{
-                g_toastWindow.hidden = YES;
-                g_hideBlock = nil;
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), g_hideBlock);
-        } @catch (NSException *e) {
-            NSLog(@"[AdInspector] Toast异常: %@", e);
+        [self.logBuffer appendString:log];
+        if (self.logBuffer.length > 8000) {
+            [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)];
+        }
+        self.logTextView.text = self.logBuffer;
+        if (self.logTextView.text.length > 0) {
+            [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)];
+        }
+        self.hidden = NO;
+    });
+}
+@end
+
+// ==================== C 工具函数 ====================
+
+static NSString *getControlEventName(UIControlEvents e) {
+    switch (e) {
+        case UIControlEventTouchDown:           return @"TouchDown";
+        case UIControlEventTouchDownRepeat:     return @"TouchDownRepeat";
+        case UIControlEventTouchDragInside:     return @"DragInside";
+        case UIControlEventTouchDragOutside:    return @"DragOutside";
+        case UIControlEventTouchUpInside:       return @"TouchUpInside";
+        case UIControlEventTouchUpOutside:      return @"TouchUpOutside";
+        case UIControlEventTouchCancel:         return @"TouchCancel";
+        case UIControlEventValueChanged:        return @"ValueChanged";
+        case UIControlEventPrimaryActionTriggered: return @"PrimaryAction";
+        case UIControlEventEditingDidBegin:     return @"EditingBegin";
+        case UIControlEventEditingDidEnd:       return @"EditingEnd";
+        default: return [NSString stringWithFormat:@"Evt%lu", (unsigned long)e];
+    }
+}
+
+static void saveToFile(NSString *log) {
+    @try {
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if (paths.count == 0) return;
+        NSString *path = [paths[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSData data] writeToFile:path atomically:YES];
+        }
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (fh) {
+            [fh seekToEndOfFile];
+            [fh writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];
+            [fh closeFile];
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[AdInspector] 写入失败: %@", e);
+    }
+}
+
+static void highlightView(UIView *view) {
+    if (!view) return;
+    UIColor *oldColor = nil;
+    CGColorRef oldCG = view.layer.borderColor;
+    if (oldCG != NULL) {
+        oldColor = [UIColor colorWithCGColor:oldCG];
+    }
+    CGFloat oldWidth = view.layer.borderWidth;
+    
+    view.layer.borderColor = [UIColor redColor].CGColor;
+    view.layer.borderWidth = 3.0;
+    
+    __weak UIView *wv = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong UIView *sv = wv;
+        if (sv) {
+            sv.layer.borderColor = oldColor ? oldColor.CGColor : NULL;
+            sv.layer.borderWidth = oldWidth;
         }
     });
 }
 
-// ================= 核心诊断逻辑 =================
-static void inspectViewAtPoint(CGPoint point) {
-    UIWindow *keyWindow = nil;
-    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (scene.activationState == UISceneActivationStateForegroundActive) {
-            for (UIWindow *window in scene.windows) {
-                if (window.isKeyWindow) { keyWindow = window; break; }
-            }
-        }
-    }
-    
-    UIView *hitView = [keyWindow hitTest:point withEvent:nil];
-    if (!hitView) {
-        showTopLevelToast(@"❌ 未命中视图，请对准按钮重试");
+static void analyzeTouchView(UIView *view, CGPoint point) {
+    if (!view) return;
+    NSDate *now = [NSDate date];
+    if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) {
         return;
     }
+    s_lastAnalysisTime = now;
     
-    // 1. Hierarchy Chain
-    NSMutableArray *chain = [NSMutableArray array];
-    UIView *current = hitView;
-    while (current) {
-        [chain addObject:[NSString stringWithFormat:@"%@ (%@)",
-                          NSStringFromClass([current class]),
-                          current.accessibilityIdentifier ?: @"nil"]];
-        current = current.superview;
-    }
-    
-    // 2. Target-Actions
-    NSMutableArray *actions = [NSMutableArray array];
-    if ([hitView isKindOfClass:[UIControl class]]) {
-        UIControl *control = (UIControl *)hitView;
-        for (id target in control.allTargets) {
-            NSArray *targetActions = [control actionsForTarget:target forControlEvent:UIControlEventAllEvents];
-            for (NSString *action in targetActions) {
-                [actions addObject:[NSString stringWithFormat:@"[Control] %@ -> %@", target, action]];
+    @try {
+        NSMutableString *out = [NSMutableString string];
+        [out appendFormat:@"\n══════ %@ ══════\n",
+         [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
+        
+        [out appendString:@"📊 视图层级链:\n"];
+        UIView *cur = view;
+        int depth = 0;
+        while (cur && depth < 15) {
+            NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@" " startingAtIndex:0];
+            [out appendFormat:@"%@▸ %@", indent, NSStringFromClass([cur class])];
+            NSMutableArray *tags = [NSMutableArray array];
+            if (cur.tag != 0) [tags addObject:[NSString stringWithFormat:@"tag:%ld", (long)cur.tag]];
+            if ([cur isKindOfClass:[UIButton class]]) {
+                NSString *t = [(UIButton *)cur titleForState:UIControlStateNormal];
+                if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
             }
+            if ([cur isKindOfClass:[UILabel class]]) {
+                NSString *t = [(UILabel *)cur text];
+                if (t.length > 20) t = [[t substringToIndex:20] stringByAppendingString:@"..."];
+                if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
+            }
+            if (cur.accessibilityLabel.length) {
+                [tags addObject:[NSString stringWithFormat:@"a11y:\"%@\"", cur.accessibilityLabel]];
+            }
+            if (tags.count) {
+                [out appendFormat:@" [%@]", [tags componentsJoinedByString:@", "]];
+            }
+            [out appendFormat:@"\n%@  %@\n", indent, NSStringFromCGRect(cur.frame)];
+            cur = cur.superview;
+            depth++;
         }
-    }
-    for (UIGestureRecognizer *gr in hitView.gestureRecognizers) {
-        [actions addObjectsFromArray:extractGestureActions(gr)];
-    }
-    
-    // 3. Extra Info
-    NSDictionary *extraInfo = @{
-        @"frame": NSStringFromCGRect(hitView.frame),
-        @"windowFrame": NSStringFromCGRect([hitView convertRect:hitView.bounds toView:nil]),
-        @"isHidden": @(hitView.isHidden),
-        @"alpha": @(hitView.alpha),
-        @"userInteractionEnabled": @(hitView.userInteractionEnabled)
-    };
-    
-    // 4. 序列化保存
-    NSDictionary *result = @{@"hierarchyChain": chain, @"targetActions": actions, @"extraInfo": extraInfo};
-    NSError *error = nil;
-    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:&error];
-    
-    if (jsonData) {
-        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ad_inspect_result.json"];
-        NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-        BOOL ok = [jsonStr writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error];
-        showTopLevelToast(ok ? [NSString stringWithFormat:@"✅ 诊断成功\n路径: %@", path]
-                             : [NSString stringWithFormat:@"⚠️ 写入失败: %@", error.localizedDescription]);
-    } else {
-        showTopLevelToast([NSString stringWithFormat:@"❌ JSON序列化失败: %@", error.localizedDescription]);
+        
+        [out appendString:@"\n🎯 Target-Action & 手势:\n"];
+        BOOL found = NO;
+        cur = view;
+        depth = 0;
+        while (cur && depth < 8) {
+            if ([cur isKindOfClass:[UIControl class]]) {
+                UIControl *c = (UIControl *)cur;
+                for (id tgt in c.allTargets) {
+                    UIControlEvents checkEvents[] = {
+                        UIControlEventTouchUpInside,
+                        UIControlEventTouchDown,
+                        UIControlEventValueChanged,
+                        UIControlEventPrimaryActionTriggered
+                    };
+                    for (int i = 0; i < 4; i++) {
+                        NSArray *acts = [c actionsForTarget:tgt forControlEvent:checkEvents[i]];
+                        if (acts.count) {
+                            found = YES;
+                            [out appendFormat:@"  [%@] → %@.%@ (%@)\n",
+                             NSStringFromClass([cur class]),
+                             NSStringFromClass([tgt class]),
+                             acts[0],
+                             getControlEventName(checkEvents[i])];
+                        }
+                    }
+                }
+            }
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                found = YES;
+                [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n",
+                 NSStringFromClass([cur class]),
+                 NSStringFromClass([gr class]),
+                 gr.enabled,
+                 gr.cancelsTouchesInView];
+                @try {
+                    if ([gr respondsToSelector:NSSelectorFromString(@"_targets")]) {
+                        NSArray *tgts = [gr valueForKey:@"_targets"];
+                        for (id t in tgts) {
+                            [out appendFormat:@"    → %@\n", t];
+                        }
+                    }
+                } @catch (...) {}
+            }
+            cur = cur.superview;
+            depth++;
+        }
+        if (!found) [out appendString:@"  (未检测到绑定)\n"];
+        
+        [out appendString:@"\n🔍 诊断信息:\n"];
+        [out appendFormat:@"  类: %@\n", NSStringFromClass([view class])];
+        [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(view.frame)];
+        [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(view.bounds)];
+        [out appendFormat:@"  userInteraction:%d hidden:%d alpha:%.2f\n",
+         view.userInteractionEnabled, view.hidden, view.alpha];
+        [out appendFormat:@"  backgroundColor: %@\n", view.backgroundColor ?: @"nil"];
+        if (view.gestureRecognizers.count) {
+            [out appendString:@"  视图手势: "];
+            for (UIGestureRecognizer *gr in view.gestureRecognizers) {
+                [out appendFormat:@"%@ ", NSStringFromClass([gr class])];
+            }
+            [out appendString:@"\n"];
+        }
+        [out appendString:@"  响应链: "];
+        UIResponder *r = view.nextResponder;
+        int rc = 0;
+        while (r && rc < 6) {
+            [out appendFormat:@"→%@ ", NSStringFromClass([r class])];
+            r = r.nextResponder;
+            rc++;
+        }
+        [out appendString:@"\n══════════════════════════\n"];
+        
+        [[AdInspectorWindow shared] showLog:out];
+        saveToFile(out);
+        highlightView(view);
+    } @catch (NSException *e) {
+        NSLog(@"[AdInspector] 分析异常: %@", e);
     }
 }
 
-// ================= 触发器状态机 =================
-static BOOL g_isThreeFingerHolding = NO;
-static CGPoint g_trackedPoint = CGPointZero;
-static dispatch_block_t g_inspectBlock = nil;
-
-%hook UIApplication
+// ==================== Hook 实现 ====================
+%hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig;
-    if (event.type != UIEventTypeTouches) return;
-    
-    NSSet *touches = [event allTouches];
-    BOOL isThreeFingers = (touches.count == 3);
-    
-    if (isThreeFingers) {
-        // 计算三指中心点，更符合指向直觉
-        CGPoint centerPoint = CGPointZero;
-        NSInteger validCount = 0;
-        for (UITouch *touch in touches) {
-            CGPoint p = [touch locationInView:touch.window];
-            centerPoint.x += p.x;
-            centerPoint.y += p.y;
-            validCount++;
-        }
-        if (validCount > 0) {
-            centerPoint.x /= validCount;
-            centerPoint.y /= validCount;
-        }
-        
-        UITouch *anyTouch = touches.anyObject;
-        if (anyTouch.phase == UITouchPhaseBegan && !g_isThreeFingerHolding) {
-            g_isThreeFingerHolding = YES;
-            g_trackedPoint = centerPoint;
-            
-            g_inspectBlock = dispatch_block_create(0, ^{
-                inspectViewAtPoint(g_trackedPoint);
-                
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    @try {
-                        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-                        [fb prepare]; [fb impactOccurred];
-                    } @catch (NSException *e) {}
-                });
-                
-                g_isThreeFingerHolding = NO;
-                g_inspectBlock = nil;
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), g_inspectBlock);
-        } else if (g_isThreeFingerHolding) {
-            // 持续更新为中心点坐标
-            g_trackedPoint = centerPoint;
-        }
-    } else {
-        if (g_isThreeFingerHolding && g_inspectBlock) {
-            dispatch_block_cancel(g_inspectBlock);
-            g_inspectBlock = nil;
-            g_isThreeFingerHolding = NO;
+    if (event.type == UIEventTypeTouches) {
+        NSSet *touches = [event allTouches];
+        if (touches.count == 1) {
+            UITouch *touch = [touches anyObject];
+            if (touch.phase == UITouchPhaseEnded && touch.view) {
+                analyzeTouchView(touch.view, [touch locationInView:nil]);
+            }
         }
     }
 }
 %end
 
+%hook UIControl
+- (void)addTarget:(id)target action:(SEL)action forControlEvents:(UIControlEvents)controlEvents {
+    NSLog(@"[AdInspector] 🔗 %@ → %@.%@ [%@]",
+          NSStringFromClass([self class]),
+          NSStringFromClass([target class]),
+          NSStringFromSelector(action),
+          getControlEventName(controlEvents));
+    %orig;
+}
+%end
+
 %ctor {
-    NSLog(@"[AdInspector] ✅ v5.0 Final 加载成功！三指静止长按0.8s触发。");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [AdInspectorWindow shared];
+        NSLog(@"[AdInspector] ✅ 已激活 - 点击任意视图查看分析");
+        
+        @try {
+            NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+            if (paths.count > 0) {
+                NSString *path = [paths[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
+                NSString *header = [NSString stringWithFormat:@"\n=== AdInspector v1.0 [%@] ===\n",
+                                   [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                                  dateStyle:NSDateFormatterShortStyle
+                                                                  timeStyle:NSDateFormatterMediumStyle]];
+                [header writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        } @catch (...) {}
+    });
 }
