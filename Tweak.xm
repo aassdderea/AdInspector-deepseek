@@ -25,6 +25,28 @@ static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
+// ==================== 工具函数：获取当前活跃的 key window ====================
+static UIWindow *getKeyWindow(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            for (UIWindow *window in windowScene.windows) {
+                if (window.isKeyWindow) return window;
+            }
+        }
+    }
+    // 备用：返回第一个可见窗口
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            for (UIWindow *window in windowScene.windows) {
+                if (!window.hidden && window.alpha > 0) return window;
+            }
+        }
+    }
+    return nil;
+}
+
 // ==================== 悬浮面板（默认隐藏，双指呼出后保持可见） ====================
 @interface AdInspectorPanel : UIView
 @property (nonatomic, strong) UITextView *logTextView;
@@ -142,22 +164,16 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 
 - (void)ensureOnTop {
-    // 确保面板始终在主窗口最顶层
-    UIWindow *keyWindow = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            keyWindow = [(UIWindowScene *)scene keyWindow];
-            break;
-        }
-    }
-    if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+    UIWindow *keyWindow = getKeyWindow();
     if (keyWindow && self.superview != keyWindow) {
         [self removeFromSuperview];
         [keyWindow addSubview:self];
         self.frame = CGRectMake(5, 160, keyWindow.bounds.size.width - 10, self.bounds.size.height);
     }
-    [keyWindow bringSubviewToFront:self];
-    self.layer.zPosition = CGFLOAT_MAX;
+    if (keyWindow) {
+        [keyWindow bringSubviewToFront:self];
+        self.layer.zPosition = CGFLOAT_MAX;
+    }
 }
 
 - (void)showLog:(NSString *)log {
@@ -166,7 +182,6 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
         if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)];
         self.logTextView.text = self.logBuffer;
         if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)];
-        // 不自动显示面板，保持隐藏状态，日志已缓存
     });
 }
 @end
@@ -606,25 +621,17 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 // ==================== 初始化（默认隐藏面板） ====================
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                keyWindow = [(UIWindowScene *)scene keyWindow];
-                break;
-            }
-        }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+        UIWindow *keyWindow = getKeyWindow();
         if (keyWindow) {
             AdInspectorPanel *panel = [AdInspectorPanel shared];
             [keyWindow addSubview:panel];
             panel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
-            panel.hidden = YES; // 确保隐藏
+            panel.hidden = YES;
         }
 
         showToast(@"🔍 已激活 | 点击“跳过”学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
-            // 同时确保面板仍在顶层（如果已显示）
             AdInspectorPanel *panel = [AdInspectorPanel shared];
             if (!panel.hidden) {
                 [panel ensureOnTop];
