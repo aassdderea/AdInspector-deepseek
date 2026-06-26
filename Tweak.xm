@@ -13,6 +13,7 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
 static void showToast(NSString *message);
+static UIWindow *getKeyWindow(void);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -24,6 +25,19 @@ static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
 
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
+
+// ==================== 获取当前 keyWindow ====================
+static UIWindow *getKeyWindow(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            for (UIWindow *window in windowScene.windows) {
+                if (window.isKeyWindow) return window;
+            }
+        }
+    }
+    return nil;
+}
 
 // ==================== 独立悬浮窗 ====================
 @class AdInspectorPanel;
@@ -47,7 +61,7 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self || (id)hitView == (id)self.panel) {
-        return nil; // 穿透窗口背景和面板背景
+        return nil; // 穿透背景
     }
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
@@ -59,7 +73,7 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 @end
 
-// ==================== 悬浮面板（默认隐藏，双指呼出后保持） ====================
+// ==================== 悬浮面板 ====================
 @interface AdInspectorPanel : UIView
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
@@ -157,6 +171,7 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 - (void)forceShow {
     self.hidden = NO;
     if (self.superview) [self.superview bringSubviewToFront:self];
+    NSLog(@"[AdInspector] 面板已呼出");
     showToast(@"👆 面板已呼出");
 }
 
@@ -170,10 +185,12 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 @end
 
-// ==================== Toast ====================
+// ==================== Toast（永远显示在主窗口上） ====================
 static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        AdInspectorPanel *panel = [AdInspectorPanel shared];
+        UIWindow *hostWindow = getKeyWindow();
+        if (!hostWindow) return;
+
         UIView *toast = [[UIView alloc] init];
         toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
         toast.layer.cornerRadius = 12;
@@ -188,10 +205,16 @@ static void showToast(NSString *message) {
         CGRect textRect = [message boundingRectWithSize:maxSize options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: label.font} context:nil];
         CGFloat w = textRect.size.width + 30, h = textRect.size.height + 16;
         label.frame = CGRectMake(15, 8, textRect.size.width, textRect.size.height);
-        CGPoint center = CGPointMake(panel.bounds.size.width/2, panel.bounds.size.height - 40);
+        CGPoint center = CGPointMake(hostWindow.bounds.size.width/2, hostWindow.bounds.size.height - 150);
         toast.frame = CGRectMake(center.x - w/2, center.y - h/2, w, h);
-        [panel addSubview:toast];
-        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{ toast.alpha = 0; } completion:^(BOOL finished) { [toast removeFromSuperview]; }];
+        toast.layer.zPosition = CGFLOAT_MAX;
+        [hostWindow addSubview:toast];
+
+        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            toast.alpha = 0;
+        } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
     });
 }
 
@@ -356,7 +379,7 @@ static void applyAllSavedRules(void) {
     }
 }
 
-// ==================== 辅助查找“跳过”文字（排除绿框） ====================
+// ==================== 辅助查找“跳过”文字 ====================
 static UIView *findSkipLabelInView(UIView *root) {
     if ([root isKindOfClass:[AdInspectorPanel class]]) return nil;
     if ([root isKindOfClass:[UIButton class]]) {
@@ -374,10 +397,9 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（屏蔽绿框触摸） ====================
+// ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
-    // 忽略来自悬浮窗或面板的触摸
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
         return;
@@ -567,6 +589,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     if (event.type == UIEventTypeTouches) {
         NSSet *touches = [event allTouches];
 
+        // 双指长按呼出面板
         if (touches.count >= 2) {
             BOOL allStationary = YES;
             for (UITouch *t in touches) {
@@ -588,6 +611,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_twoFingerStart = nil;
         }
 
+        // 单指分析（仅当抬起且不处于双指状态）
         if (touches.count == 1) {
             UITouch *touch = [touches anyObject];
             if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
