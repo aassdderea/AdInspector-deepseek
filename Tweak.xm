@@ -11,6 +11,7 @@ static void saveRule(NSDictionary *rule);
 static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
+static void showToast(NSString *message);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -19,7 +20,7 @@ static const NSTimeInterval kMinAnalysisInterval = 0.3;
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
-// ==================== 悬浮窗 ====================
+// ==================== 悬浮窗（极高优先级） ====================
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
@@ -42,14 +43,17 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
     CGFloat w = frame.size.width;
     self = [super initWithFrame:CGRectMake(5, 80, w - 10, 280)];
     if (self) {
-        self.windowLevel = UIWindowLevelAlert + 999;
+        // ===== 关键修正：窗口层级设为最高，永不丢失 =====
+        self.windowLevel = CGFLOAT_MAX;
+        // ================================================
+
         self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
         self.layer.cornerRadius = 10;
         self.layer.borderWidth = 1.5;
         self.layer.borderColor = [UIColor cyanColor].CGColor;
         self.hidden = NO;
         self.userInteractionEnabled = YES;
-        self.clipsToBounds = NO;
+        self.clipsToBounds = NO;  // 允许子视图（如 Toast）超出边界
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 20)];
         title.text = @"🔍 AdInspector";
@@ -112,6 +116,49 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 @end
 
+// ==================== 通用 Toast（显示在悬浮窗上） ====================
+static void showToast(NSString *message) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AdInspectorWindow *inspector = [AdInspectorWindow shared];
+
+        UIView *toast = [[UIView alloc] init];
+        toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        toast.layer.cornerRadius = 12;
+        toast.clipsToBounds = YES;
+
+        UILabel *label = [[UILabel alloc] init];
+        label.text = message;
+        label.textColor = [UIColor whiteColor];
+        label.font = [UIFont boldSystemFontOfSize:14];
+        label.numberOfLines = 0;
+        label.textAlignment = NSTextAlignmentCenter;
+        [toast addSubview:label];
+
+        CGSize maxSize = CGSizeMake([UIScreen mainScreen].bounds.size.width - 60, CGFLOAT_MAX);
+        CGRect textRect = [message boundingRectWithSize:maxSize
+                                                options:NSStringDrawingUsesLineFragmentOrigin
+                                             attributes:@{NSFontAttributeName: label.font}
+                                                context:nil];
+        CGFloat w = textRect.size.width + 30;
+        CGFloat h = textRect.size.height + 16;
+        label.frame = CGRectMake(15, 8, textRect.size.width, textRect.size.height);
+
+        // 以悬浮窗坐标系定位到屏幕中央偏下
+        CGPoint screenCenter = CGPointMake([UIScreen mainScreen].bounds.size.width / 2,
+                                           [UIScreen mainScreen].bounds.size.height - 150);
+        CGPoint centerInWindow = [inspector convertPoint:screenCenter fromView:nil];
+        toast.frame = CGRectMake(centerInWindow.x - w/2, centerInWindow.y - h/2, w, h);
+
+        [inspector addSubview:toast];
+
+        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            toast.alpha = 0;
+        } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
+    });
+}
+
 // ==================== 工具函数实现 ====================
 
 static NSString *getControlEventName(UIControlEvents e) {
@@ -173,11 +220,11 @@ static void highlightView(UIView *view) {
 static void saveRule(NSDictionary *rule) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *existing = [ud arrayForKey:kRulesKey] ?: @[];
-    // 简单去重
     for (NSDictionary *r in existing) {
         if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] &&
             [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] &&
             [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) {
+            showToast(@"规则已存在，无需重复学习");
             return;
         }
     }
@@ -186,6 +233,7 @@ static void saveRule(NSDictionary *rule) {
     [ud setObject:newRules forKey:kRulesKey];
     [ud synchronize];
     NSLog(@"[AdInspector] 规则已保存: %@", rule);
+    showToast([NSString stringWithFormat:@"✅ 已学习新规则：%@", rule[@"buttonTextPattern"]]);
 }
 
 static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
@@ -201,7 +249,6 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
             currentText = [(UILabel *)root text];
         }
         if (currentText && [currentText hasPrefix:textPattern]) {
-            // 验证层级链
             NSMutableArray *currentChain = [NSMutableArray array];
             UIView *cur = root;
             while (cur && ![cur isKindOfClass:[UIWindow class]]) {
@@ -226,6 +273,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         if ([view isKindOfClass:[UIControl class]]) {
             UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
             [(UIControl *)view sendActionsForControlEvents:events];
+            showToast(@"⏩ 已自动触发跳过 (ControlEvent)");
         }
     } else if ([triggerType isEqualToString:@"gesture"]) {
         NSString *gestureClass = rule[@"gestureClass"];
@@ -243,6 +291,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                                 id target = t[0];
                                 if ([NSStringFromClass([target class]) isEqualToString:targetClass]) {
                                     ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                                    showToast(@"⏩ 已自动触发跳过 (Gesture)");
                                     return;
                                 }
                             }
@@ -252,9 +301,9 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             }
             cur = cur.superview;
         }
-        // fallback
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+            showToast(@"⏩ 已自动触发跳过 (Fallback)");
         }
     }
 }
@@ -273,7 +322,7 @@ static void applyAllSavedRules(void) {
                 if (matched) {
                     NSLog(@"[AutoSkip] 规则匹配成功，自动跳过: %@", rule[@"buttonTextPattern"]);
                     triggerSkip(matched, rule);
-                    break;
+                    return;
                 }
             }
         }
@@ -293,7 +342,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
 
-        // 层级链
         NSMutableArray *chainArray = [NSMutableArray array];
         UIView *cur = view;
         while (cur && ![cur isKindOfClass:[UIWindow class]]) {
@@ -328,7 +376,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             depth++;
         }
 
-        // Target-Action 信息
         [out appendString:@"\n🎯 Target-Action & 手势:\n"];
         BOOL found = NO;
         NSMutableArray *taInfo = [NSMutableArray array];
@@ -393,7 +440,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
 
-        // 诊断信息
         [out appendString:@"\n🔍 诊断信息:\n"];
         [out appendFormat:@"  类: %@\n", NSStringFromClass([view class])];
         [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(view.frame)];
@@ -463,7 +509,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                 rule[@"triggerType"] = @"controlEvent";
                 rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
             } else {
-                NSLog(@"[AdInspector] 未能识别触发方式，不学习此按钮");
+                showToast(@"❌ 无法识别触发方式，未学习此按钮");
                 return;
             }
         }
@@ -472,6 +518,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 
     } @catch (NSException *e) {
         NSLog(@"[AdInspector] 分析异常: %@", e);
+        showToast(@"⚠️ 分析过程出现异常");
     }
 }
 
@@ -506,6 +553,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [AdInspectorWindow shared];
+        showToast(@"🔍 AdInspector 已激活");
         NSLog(@"[AdInspector] ✅ 自学习广告跳过插件已激活");
 
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
