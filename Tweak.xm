@@ -12,6 +12,7 @@ static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
+static void showToast(NSString *message);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -20,7 +21,7 @@ static const NSTimeInterval kMinAnalysisInterval = 0.3;
 // ==================== 规则存储 Key ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
-// ==================== 悬浮窗（保持最早结构 + 增加清除按钮）====================
+// ==================== 悬浮窗（触摸穿透） ====================
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
@@ -43,49 +44,54 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
     CGFloat w = frame.size.width;
     self = [super initWithFrame:CGRectMake(5, 80, w - 10, 280)];
     if (self) {
-        self.windowLevel = UIWindowLevelAlert + 999; // 保持与原始一致的层级，足够高但不会阻挡触摸事件
+        // 窗口层级：高于普通广告窗口，但通过 hitTest 穿透保证不阻挡触摸
+        self.windowLevel = UIWindowLevelAlert + 1000;
         self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
         self.layer.cornerRadius = 10;
         self.layer.borderWidth = 1.5;
         self.layer.borderColor = [UIColor cyanColor].CGColor;
         self.hidden = NO;
-        self.userInteractionEnabled = YES; // 允许操作悬浮窗上的按钮
+        self.userInteractionEnabled = YES; // 必须为 YES，但 hitTest 会控制具体响应区域
         self.clipsToBounds = NO;
 
-        // ---- 标题 ----
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 150, 20)];
+        // 标题栏（可拖动区域）
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 120, 20)];
         title.text = @"🔍 AdInspector";
         title.textColor = [UIColor cyanColor];
         title.font = [UIFont boldSystemFontOfSize:14];
+        title.tag = 1001; // 用于识别可交互区域
         [self addSubview:title];
 
-        // ---- 关闭按钮 ----
+        // 关闭按钮
         UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
         close.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
         [close setTitle:@"✕" forState:UIControlStateNormal];
         [close setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
         close.titleLabel.font = [UIFont boldSystemFontOfSize:20];
+        close.tag = 1002;
         [close addTarget:self action:@selector(hideSelf) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:close];
 
-        // ---- 清除规则按钮（新） ----
+        // 清空规则按钮
         UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         clearBtn.frame = CGRectMake(self.bounds.size.width - 90, 3, 45, 30);
         [clearBtn setTitle:@"清空" forState:UIControlStateNormal];
         [clearBtn setTitleColor:[UIColor orangeColor] forState:UIControlStateNormal];
         clearBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        clearBtn.tag = 1003;
         [clearBtn addTarget:self action:@selector(clearRulesTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:clearBtn];
 
-        // ---- 拖动手柄 ----
+        // 拖动手柄
         UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(self.bounds.size.width/2 - 15, 4, 30, 4)];
         handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6];
         handle.layer.cornerRadius = 2;
+        handle.tag = 1004;
         [self addSubview:handle];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
         [self addGestureRecognizer:pan];
 
-        // ---- 日志文本区 ----
+        // 日志文本区
         CGFloat tvY = 32;
         self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, tvY, self.bounds.size.width - 10, self.bounds.size.height - tvY - 5)];
         self.logTextView.backgroundColor = [UIColor clearColor];
@@ -93,12 +99,30 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
         self.logTextView.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
         self.logTextView.editable = NO;
         self.logTextView.selectable = YES;
+        self.logTextView.tag = 1005; // 日志区域可滚动但不可触发其他操作
         self.logTextView.textContainerInset = UIEdgeInsetsMake(2, 2, 2, 2);
         [self addSubview:self.logTextView];
 
         self.logBuffer = [NSMutableString string];
     }
     return self;
+}
+
+// 核心：触摸穿透逻辑，只让 tag 1001~1005 的控件响应触摸
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hitView = [super hitTest:point withEvent:event];
+    if (hitView == self) {
+        return nil; // 点击窗口空白区域 → 穿透
+    }
+    // 检查点击的控件是否属于可交互标记
+    while (hitView && hitView != self) {
+        NSInteger tag = hitView.tag;
+        if (tag >= 1001 && tag <= 1005) {
+            return hitView; // 允许响应
+        }
+        hitView = hitView.superview;
+    }
+    return nil; // 其余控件一律穿透
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
@@ -114,7 +138,6 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 - (void)clearRulesTapped {
     clearAllRules();
     [self showLog:@"\n🗑️ 已清空所有学习规则\n"];
-    // 简单Toast提示
     UIView *toast = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 200, 40)];
     toast.center = CGPointMake(self.bounds.size.width/2, self.bounds.size.height/2);
     toast.backgroundColor = [[UIColor orangeColor] colorWithAlphaComponent:0.9];
@@ -148,7 +171,7 @@ static NSString *const kRulesKey = @"AdInspector_SkipRules";
 }
 @end
 
-// ==================== 通用 Toast（显示在悬浮窗上） ====================
+// ==================== Toast（显示在悬浮窗上） ====================
 static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
         AdInspectorWindow *inspector = [AdInspectorWindow shared];
@@ -189,7 +212,7 @@ static void showToast(NSString *message) {
     });
 }
 
-// ==================== 工具函数实现 ====================
+// ==================== 工具函数 ====================
 
 static NSString *getControlEventName(UIControlEvents e) {
     switch (e) {
@@ -245,7 +268,7 @@ static void highlightView(UIView *view) {
     });
 }
 
-// ==================== 规则管理（C 函数） ====================
+// ==================== 规则管理 ====================
 
 static void saveRule(NSDictionary *rule) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -262,7 +285,6 @@ static void saveRule(NSDictionary *rule) {
     [newRules addObject:rule];
     [ud setObject:newRules forKey:kRulesKey];
     [ud synchronize];
-    NSLog(@"[AdInspector] 规则已保存: %@", rule);
     showToast([NSString stringWithFormat:@"✅ 已学习：%@", rule[@"buttonTextPattern"]]);
 }
 
@@ -364,7 +386,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 核心分析函数（完全保留原逻辑，加入学习）====================
+// ==================== 核心分析（保持原始通用逻辑） ====================
 
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
@@ -377,7 +399,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
 
-        // ---- 层级链 ----
         NSMutableArray *chainArray = [NSMutableArray array];
         UIView *cur = view;
         while (cur && ![cur isKindOfClass:[UIWindow class]]) {
@@ -412,7 +433,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             depth++;
         }
 
-        // ---- Target-Action & 手势 ----
         [out appendString:@"\n🎯 Target-Action & 手势:\n"];
         BOOL found = NO;
         NSMutableArray *taInfo = [NSMutableArray array];
@@ -479,7 +499,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
 
-        // ---- 诊断信息 ----
         [out appendString:@"\n🔍 诊断信息:\n"];
         [out appendFormat:@"  类: %@\n", NSStringFromClass([view class])];
         [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(view.frame)];
@@ -508,7 +527,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         saveToFile(out);
         highlightView(view);
 
-        // ---------- 学习规则（自动识别触发方式） ----------
+        // 学习规则
         NSString *buttonText = nil;
         if ([view isKindOfClass:[UIButton class]]) {
             buttonText = [(UIButton *)view titleForState:UIControlStateNormal];
@@ -561,8 +580,8 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     }
 }
 
-// ==================== Hook 实现（完全保留原始结构） ====================
-%hook UIWindow
+// ==================== Hook UIApplication 的 sendEvent: ====================
+%hook UIApplication
 - (void)sendEvent:(UIEvent *)event {
     %orig;
     if (event.type == UIEventTypeTouches) {
@@ -577,6 +596,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 }
 %end
 
+// 保持对 UIControl 绑定的监控（可选）
 %hook UIControl
 - (void)addTarget:(id)target action:(SEL)action forControlEvents:(UIControlEvents)controlEvents {
     NSLog(@"[AdInspector] 🔗 %@ → %@.%@ [%@]",
@@ -588,13 +608,12 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 }
 %end
 
-// ==================== 初始化（加入定时扫描） ====================
+// ==================== 初始化 ====================
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [AdInspectorWindow shared];
         showToast(@"🔍 AdInspector 已激活");
 
-        // 定时扫描广告按钮并自动跳过（仅应用已学规则，不会主动学习）
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
         }];
@@ -603,7 +622,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
             if (paths.count > 0) {
                 NSString *path = [paths[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
-                NSString *header = [NSString stringWithFormat:@"\n=== AdInspector v3.0 (自学习+清除) [%@] ===\n",
+                NSString *header = [NSString stringWithFormat:@"\n=== AdInspector v4.0 (稳定穿透版) [%@] ===\n",
                                    [NSDateFormatter localizedStringFromDate:[NSDate date]
                                                                   dateStyle:NSDateFormatterShortStyle
                                                                   timeStyle:NSDateFormatterMediumStyle]];
