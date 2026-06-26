@@ -1,13 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <objc/message.h> 
+#import <objc/message.h>
 
 // ==================== 前置声明 ====================
 static NSString *getControlEventName(UIControlEvents event);
 static void saveToFile(NSString *log);
 static void analyzeTouchView(UIView *view, CGPoint touchPoint);
 static void highlightView(UIView *view);
-static void autoCheckAndSkipAd(void);
 static void saveRule(NSDictionary *rule);
 static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
