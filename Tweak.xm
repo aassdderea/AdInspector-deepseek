@@ -40,7 +40,7 @@ static UIWindow *getKeyWindow(void) {
     return nil;
 }
 
-// ==================== 独立悬浮窗 ====================
+// ==================== 独立悬浮窗（永不消失） ====================
 @class AdInspectorPanel;
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, weak) AdInspectorPanel *panel;
@@ -198,14 +198,13 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
         for (NSInteger i = 0; i < rules.count; i++) {
             NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 窗口:%@ 目标:%@.%@\n层级链:%@\n",
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 窗口:%@ 容器:%@\n层级链:%@\n",
              (long)i+1,
              rule[@"buttonClass"],
              rule[@"buttonTextPattern"],
              rule[@"triggerType"] ?: @"未知",
              rule[@"windowClass"] ?: @"未知",
-             rule[@"targetClass"] ?: @"-",
-             rule[@"actionSelector"] ?: @"-",
+             rule[@"containerClass"] ?: @"未知",
              [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
         }
         [self showLog:out];
@@ -399,7 +398,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 强力跳过引擎 ====================
+// ==================== 强力跳过引擎（增强窗口查找） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -408,67 +407,67 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
     NSString *triggerType = rule[@"triggerType"];
     NSString *containerClass = rule[@"containerClass"];
-    NSString *windowClass = rule[@"windowClass"];
     NSString *targetClass = rule[@"targetClass"];
     NSString *actionStr = rule[@"actionSelector"];
 
-    // 强制关闭函数（多层兜底）
-    void (^forceClose)(void) = ^{
-        // 1. 隐藏容器
-        if (containerClass) {
-            UIView *container = view;
-            while (container && ![NSStringFromClass([container class]) isEqualToString:containerClass]) {
-                container = container.superview;
-            }
-            if (container && !container.hidden) {
-                container.hidden = YES;
-                showToast(@"⏩ 已关闭广告容器");
-                return;
-            }
-        }
-        // 2. 按窗口类名隐藏窗口
-        if (windowClass) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                for (UIWindow *win in [(UIWindowScene *)scene windows]) {
-                    if ([NSStringFromClass([win class]) isEqualToString:windowClass] && !win.hidden) {
-                        win.hidden = YES;
-                        showToast(@"⏩ 已关闭广告窗口");
-                        return;
-                    }
-                }
-            }
-        }
-        // 3. 查找包含按钮的窗口并隐藏
+    // 根据容器类名找到所在窗口
+    UIWindow *(^findContainerWindow)(void) = ^{
+        if (!containerClass) return (UIWindow *)nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *win in [(UIWindowScene *)scene windows]) {
                 if ([win isKindOfClass:[AdInspectorWindow class]]) continue;
-                if ([view isDescendantOfView:win]) {
-                    win.hidden = YES;
-                    showToast(@"⏩ 已隐藏广告所在窗口");
-                    return;
+                // 检查该窗口的子视图是否包含容器类
+                if ([self view:win containsSubviewOfClass:containerClass]) {
+                    return win;
                 }
             }
         }
-        // 4. 隐藏所有非主窗口（最后手段）
+        return (UIWindow *)nil;
+    };
+
+    // 检查视图树中是否有指定类名的子视图
+    BOOL (^viewContainsClass)(UIView *, NSString *) = ^BOOL(UIView *root, NSString *className) {
+        if ([NSStringFromClass([root class]) isEqualToString:className]) return YES;
+        for (UIView *sub in root.subviews) {
+            if (viewContainsClass(sub, className)) return YES;
+        }
+        return NO;
+    };
+
+    // 强制关闭
+    void (^forceClose)(void) = ^{
+        // 1. 查找容器窗口并隐藏
+        UIWindow *containerWin = findContainerWindow();
+        if (containerWin && !containerWin.hidden) {
+            containerWin.hidden = YES;
+            showToast(@"⏩ 已关闭广告窗口 (容器)");
+            return;
+        }
+        // 2. 尝试当前按钮的窗口
+        UIWindow *currentWin = view.window;
+        if (currentWin && !currentWin.hidden) {
+            currentWin.hidden = YES;
+            showToast(@"⏩ 已关闭广告窗口");
+            return;
+        }
+        // 3. 隐藏所有非主窗口（最后手段）
         UIWindow *keyWin = getKeyWindow();
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *win in [(UIWindowScene *)scene windows]) {
                 if (win != keyWin && win != s_floatWindow && !win.hidden && win.alpha > 0) {
                     win.hidden = YES;
-                    showToast(@"⏩ 已暴力隐藏其他窗口");
+                    showToast(@"⏩ 已暴力关闭广告窗口");
                     return;
                 }
             }
         }
     };
 
-    // ---------- 优先直接调用 target/action ----------
+    // ---------- 直接调用 target/action ----------
     if (targetClass && actionStr) {
         SEL action = NSSelectorFromString(actionStr);
-        // 查找 target 对象（沿响应链找）
         id target = view;
         while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
             target = [target nextResponder];
@@ -476,11 +475,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         if (target && [target respondsToSelector:action]) {
             ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
             showToast(@"⏩ 已直接调用跳过方法");
-            // 延迟检查，如果还在则强制关闭
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!view.hidden && view.alpha > 0) {
-                    forceClose();
-                }
+                forceClose();
             });
             return;
         }
@@ -493,9 +489,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             [(UIControl *)view sendActionsForControlEvents:events];
             showToast(@"⏩ 已模拟点击");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!view.hidden && view.alpha > 0) {
-                    forceClose();
-                }
+                forceClose();
             });
             return;
         }
@@ -517,9 +511,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                                 ((void (*)(id, SEL, id))objc_msgSend)(tgt, action, gr);
                                 showToast(@"⏩ 已模拟手势");
                                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                                    if (!view.hidden && view.alpha > 0) {
-                                        forceClose();
-                                    }
+                                    forceClose();
                                 });
                                 return;
                             }
@@ -529,9 +521,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
                 showToast(@"⏩ 已强制手势状态");
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (!view.hidden && view.alpha > 0) {
-                        forceClose();
-                    }
+                    forceClose();
                 });
                 return;
             }
@@ -541,6 +531,15 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
     // ---------- 终极兜底 ----------
     forceClose();
+}
+
+// 辅助函数：检查视图是否包含指定类名的子视图
+static BOOL viewContainsClass(UIView *root, NSString *className) {
+    if ([NSStringFromClass([root class]) isEqualToString:className]) return YES;
+    for (UIView *sub in root.subviews) {
+        if (viewContainsClass(sub, className)) return YES;
+    }
+    return NO;
 }
 
 // ==================== 自动跳过扫描（0.2秒间隔） ====================
@@ -596,7 +595,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（学习，记录窗口和目标） ====================
+// ==================== 核心分析（学习，记录窗口和容器） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -738,7 +737,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (containerClass) rule[@"containerClass"] = containerClass;
         if (windowClass) rule[@"windowClass"] = windowClass;
 
-        // 提取 targetClass 和 action (优先 UIControl)
+        // 提取 target/action
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
                 rule[@"triggerType"] = @"controlEvent";
@@ -858,7 +857,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow.hidden = NO;
         }
 
-        showToast(@"🔍 已激活 | 点击“跳过/广告/关闭”学习 | 双指长按呼出面板");
+        showToast(@"🔍 已激活 | 点击跳过/广告/关闭学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
             if (s_floatWindow) s_floatWindow.hidden = NO;
