@@ -70,7 +70,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
         NSInteger tag = check.tag;
-        if (tag >= 1001 && tag <= 1005) return check;
+        if (tag >= 1001 && tag <= 1006) return check;
         check = check.superview;
     }
     return nil;
@@ -142,6 +142,15 @@ static AdInspectorWindow *s_floatWindow = nil;
         [clearBtn addTarget:self action:@selector(clearRulesTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:clearBtn];
 
+        UIButton *viewBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        viewBtn.frame = CGRectMake(self.bounds.size.width - 135, 3, 45, 30);
+        [viewBtn setTitle:@"查看" forState:UIControlStateNormal];
+        [viewBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];
+        viewBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        viewBtn.tag = 1006;
+        [viewBtn addTarget:self action:@selector(viewRulesTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:viewBtn];
+
         UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(self.bounds.size.width/2 - 15, 4, 30, 4)];
         handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6];
         handle.layer.cornerRadius = 2;
@@ -180,6 +189,26 @@ static AdInspectorWindow *s_floatWindow = nil;
     showToast(@"🗑️ 规则已清除");
 }
 
+- (void)viewRulesTapped {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *rules = [ud arrayForKey:kRulesKey];
+    if (rules.count == 0) {
+        [self showLog:@"\n📋 当前无已保存规则\n"];
+    } else {
+        NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
+        for (NSInteger i = 0; i < rules.count; i++) {
+            NSDictionary *rule = rules[i];
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@\n层级链:%@\n",
+             (long)i+1,
+             rule[@"buttonClass"],
+             rule[@"buttonTextPattern"],
+             rule[@"triggerType"] ?: @"未知",
+             [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
+        }
+        [self showLog:out];
+    }
+}
+
 - (void)forceShow {
     if (!s_floatWindow) {
         UIWindowScene *activeScene = nil;
@@ -212,6 +241,8 @@ static AdInspectorWindow *s_floatWindow = nil;
     self.hidden = NO;
     self.alpha = 1.0;
     showToast(@"👆 面板已呼出");
+    // 自动显示已保存规则
+    [self viewRulesTapped];
 }
 
 - (void)showLog:(NSString *)log {
@@ -340,7 +371,6 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
             if (textPattern.length <= 2) {
                 textMatches = [currentText isEqualToString:textPattern];
             } else {
-                // 自动跳过时采用包含匹配，容忍数字变化
                 textMatches = ([currentText rangeOfString:textPattern].location != NSNotFound &&
                                currentText.length <= 15);
             }
@@ -367,7 +397,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过 ====================
+// ==================== 自动跳过（增强版，所有路径均有兜底） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -375,10 +405,20 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     NSString *triggerType = rule[@"triggerType"];
+    UIWindow *adWindow = view.window;
+
     if ([triggerType isEqualToString:@"controlEvent"]) {
         if ([view isKindOfClass:[UIControl class]]) {
-            [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
+            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
+            [(UIControl *)view sendActionsForControlEvents:events];
             showToast(@"⏩ 已自动跳过");
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (adWindow && !adWindow.hidden) {
+                    adWindow.hidden = YES;
+                    showToast(@"⏩ 已强制关闭广告窗口");
+                }
+            });
             return;
         }
     }
@@ -397,16 +437,26 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                             if ([NSStringFromClass([target class]) isEqualToString:rule[@"targetClass"]]) {
                                 ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
                                 showToast(@"⏩ 已自动跳过");
+
+                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                    if (adWindow && !adWindow.hidden) {
+                                        adWindow.hidden = YES;
+                                        showToast(@"⏩ 已强制关闭广告窗口");
+                                    }
+                                });
                                 return;
                             }
                         }
                     } @catch (NSException *e) {}
                 }
                 [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (!view.window || view.window.hidden) return;
-                    view.window.hidden = YES;
-                    showToast(@"⏩ 已强制关闭广告窗口");
+                showToast(@"⏩ 已自动跳过 (手势)");
+
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (adWindow && !adWindow.hidden) {
+                        adWindow.hidden = YES;
+                        showToast(@"⏩ 已强制关闭广告窗口");
+                    }
                 });
                 return;
             }
@@ -414,8 +464,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         cur = cur.superview;
     }
 
-    if (view.window) {
-        view.window.hidden = YES;
+    if (adWindow) {
+        adWindow.hidden = YES;
         showToast(@"⏩ 已强制关闭广告窗口");
     }
 }
@@ -444,10 +494,8 @@ static void applyAllSavedRules(void) {
 // ==================== 增强的跳过按钮识别 ====================
 static BOOL isSkipText(NSString *text) {
     if (!text || text.length == 0) return NO;
-    // 常见跳过关键词
     NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"];
     for (NSString *keyword in keywords) {
-        // 包含匹配，但限制总长度避免误判（跳过按钮文本通常不超过15字符）
         if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound &&
             text.length <= 15) {
             return YES;
@@ -459,21 +507,15 @@ static BOOL isSkipText(NSString *text) {
 static UIView *findSkipLabelInView(UIView *root) {
     if ([root isKindOfClass:[AdInspectorPanel class]]) return nil;
     
-    // 先检查当前视图文本
     NSString *currentText = nil;
     if ([root isKindOfClass:[UIButton class]]) {
         currentText = [(UIButton *)root titleForState:UIControlStateNormal];
     } else if ([root isKindOfClass:[UILabel class]]) {
         currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
     }
-    if (!currentText) {
-        currentText = root.accessibilityLabel;
-    }
-    if (isSkipText(currentText)) {
-        return root;
-    }
+    if (!currentText) currentText = root.accessibilityLabel;
+    if (isSkipText(currentText)) return root;
 
-    // 递归子视图
     for (UIView *sub in root.subviews) {
         UIView *found = findSkipLabelInView(sub);
         if (found) return found;
@@ -481,13 +523,11 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析 ====================
+// ==================== 核心分析（含学习） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
-        [view.window isKindOfClass:[AdInspectorWindow class]]) {
-        return;
-    }
+        [view.window isKindOfClass:[AdInspectorWindow class]]) return;
 
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
