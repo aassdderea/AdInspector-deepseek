@@ -198,11 +198,12 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
         for (NSInteger i = 0; i < rules.count; i++) {
             NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@\n层级链:%@\n",
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 窗口:%@\n层级链:%@\n",
              (long)i+1,
              rule[@"buttonClass"],
              rule[@"buttonTextPattern"],
              rule[@"triggerType"] ?: @"未知",
+             rule[@"windowClass"] ?: @"未知",
              [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
         }
         [self showLog:out];
@@ -396,7 +397,21 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过（修正版：直接隐藏窗口） ====================
+// ==================== 强力跳过引擎 ====================
+static void hideWindowByClass(NSString *windowClass) {
+    if (!windowClass) return;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in [(UIWindowScene *)scene windows]) {
+            if ([NSStringFromClass([window class]) isEqualToString:windowClass] && !window.hidden) {
+                window.hidden = YES;
+                showToast([NSString stringWithFormat:@"⏩ 隐藏广告窗口: %@", windowClass]);
+                return;
+            }
+        }
+    }
+}
+
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -404,12 +419,25 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     NSString *triggerType = rule[@"triggerType"];
-    UIWindow *adWindow = view.window; // 关键：记录广告窗口
+    UIWindow *adWindow = view.window;
+    NSString *windowClass = rule[@"windowClass"];
 
-    // 辅助函数：隐藏广告窗口
-    void (^hideAdWindow)(void) = ^{
+    // 辅助：强制关闭广告
+    void (^forceClose)(void) = ^{
+        // 1. 如果获取到的窗口有效且未隐藏，直接隐藏
         if (adWindow && !adWindow.hidden) {
             adWindow.hidden = YES;
+            showToast(@"⏩ 已强制关闭广告窗口");
+            return;
+        }
+        // 2. 根据窗口类名隐藏
+        if (windowClass) {
+            hideWindowByClass(windowClass);
+            return;
+        }
+        // 3. 最后尝试隐藏按钮所在的窗口（可能已变化）
+        if (view.window && !view.window.hidden) {
+            view.window.hidden = YES;
             showToast(@"⏩ 已强制关闭广告窗口");
         }
     };
@@ -419,11 +447,14 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         if ([view isKindOfClass:[UIControl class]]) {
             UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
             [(UIControl *)view sendActionsForControlEvents:events];
-            showToast(@"⏩ 已自动跳过 (Control)");
+            showToast(@"⏩ 已模拟点击");
 
-            // 延迟检查并强制隐藏
+            // 延迟检查
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                hideAdWindow();
+                // 检查广告是否消失
+                if (view.window && !view.window.hidden && view.alpha > 0) {
+                    forceClose();
+                }
             });
             return;
         }
@@ -435,7 +466,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     while (cur) {
         for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
             if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                // 尝试 target/action
                 if (rule[@"targetClass"] && rule[@"actionSelector"]) {
                     SEL action = NSSelectorFromString(rule[@"actionSelector"]);
                     @try {
@@ -444,20 +474,23 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                             id target = [t valueForKey:@"_target"];
                             if ([NSStringFromClass([target class]) isEqualToString:rule[@"targetClass"]]) {
                                 ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
-                                showToast(@"⏩ 已自动跳过 (Gesture)");
+                                showToast(@"⏩ 已模拟手势");
                                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                                    hideAdWindow();
+                                    if (view.window && !view.window.hidden && view.alpha > 0) {
+                                        forceClose();
+                                    }
                                 });
                                 return;
                             }
                         }
                     } @catch (NSException *e) {}
                 }
-                // 强制设手势状态
                 [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
-                showToast(@"⏩ 已自动跳过 (Gesture State)");
+                showToast(@"⏩ 已强制手势状态");
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    hideAdWindow();
+                    if (view.window && !view.window.hidden && view.alpha > 0) {
+                        forceClose();
+                    }
                 });
                 return;
             }
@@ -466,7 +499,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     // ---------- 路径3：终极兜底 ----------
-    hideAdWindow();
+    forceClose();
 }
 
 // ==================== 自动跳过扫描 ====================
@@ -482,7 +515,7 @@ static void applyAllSavedRules(void) {
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
                 if (matched && !matched.hidden && matched.alpha > 0 && matched.window) {
-                    NSLog(@"[AutoSkip] 规则命中，自动跳过: %@", rule[@"buttonTextPattern"]);
+                    NSLog(@"[AutoSkip] 规则命中: %@", rule[@"buttonTextPattern"]);
                     triggerSkip(matched, rule);
                     return;
                 }
@@ -523,7 +556,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（含学习） ====================
+// ==================== 核心分析（学习时记录窗口类名） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -540,6 +573,10 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     }
 
     @try {
+        // 获取所在窗口
+        UIWindow *adWindow = actualView.window;
+        NSString *windowClass = adWindow ? NSStringFromClass([adWindow class]) : @"未知";
+
         NSMutableString *out = [NSMutableString string];
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
@@ -550,7 +587,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             [chainArray addObject:NSStringFromClass([cur class])];
             cur = cur.superview;
         }
-        NSString *windowClass = cur ? NSStringFromClass([cur class]) : @"";
 
         [out appendString:@"📊 视图层级链:\n"];
         cur = actualView;
@@ -625,7 +661,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
 
-        [out appendString:@"\n🔍 诊断信息:\n"];
+        [out appendFormat:@"\n🔍 诊断信息:\n  广告窗口: %@\n", windowClass];
         [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])];
         [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)];
         [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(actualView.bounds)];
@@ -780,13 +816,9 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         showToast(@"🔍 已激活 | 点击跳过/广告/关闭学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
-            if (s_floatWindow) {
-                s_floatWindow.hidden = NO;
-            }
+            if (s_floatWindow) s_floatWindow.hidden = NO;
             AdInspectorPanel *panel = [AdInspectorPanel shared];
-            if (!panel.hidden && panel.superview) {
-                [panel.superview bringSubviewToFront:panel];
-            }
+            if (!panel.hidden && panel.superview) [panel.superview bringSubviewToFront:panel];
         }];
     });
 }
