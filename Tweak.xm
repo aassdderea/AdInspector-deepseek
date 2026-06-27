@@ -406,7 +406,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
     NSString *triggerType = rule[@"triggerType"];
     NSString *containerClass = rule[@"containerClass"];
-    UIWindow *adWindow = view.window; // 可能为 nil
 
     // 强制关闭函数
     void (^forceClose)(void) = ^{
