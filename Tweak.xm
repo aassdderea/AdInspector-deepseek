@@ -198,12 +198,11 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
         for (NSInteger i = 0; i < rules.count; i++) {
             NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 容器:%@\n层级链:%@\n",
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@\n层级链:%@\n",
              (long)i+1,
              rule[@"buttonClass"],
              rule[@"buttonTextPattern"],
              rule[@"triggerType"] ?: @"未知",
-             rule[@"containerClass"] ?: @"未知",
              [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
         }
         [self showLog:out];
@@ -397,7 +396,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过（增强版，精准隐藏容器） ====================
+// ==================== 自动跳过（修正版：直接隐藏窗口） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -405,22 +404,10 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     NSString *triggerType = rule[@"triggerType"];
-    UIWindow *adWindow = view.window;
-    NSString *containerClass = rule[@"containerClass"];
+    UIWindow *adWindow = view.window; // 关键：记录广告窗口
 
-    // 辅助函数：隐藏容器视图
-    void (^hideContainer)(void) = ^{
-        if (containerClass) {
-            UIView *container = view;
-            while (container && ![NSStringFromClass([container class]) isEqualToString:containerClass]) {
-                container = container.superview;
-            }
-            if (container && !container.hidden) {
-                container.hidden = YES;
-                showToast(@"⏩ 已强制关闭广告容器");
-                return;
-            }
-        }
+    // 辅助函数：隐藏广告窗口
+    void (^hideAdWindow)(void) = ^{
         if (adWindow && !adWindow.hidden) {
             adWindow.hidden = YES;
             showToast(@"⏩ 已强制关闭广告窗口");
@@ -434,10 +421,9 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             [(UIControl *)view sendActionsForControlEvents:events];
             showToast(@"⏩ 已自动跳过 (Control)");
 
+            // 延迟检查并强制隐藏
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (adWindow && !adWindow.hidden) {
-                    hideContainer();
-                }
+                hideAdWindow();
             });
             return;
         }
@@ -449,6 +435,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     while (cur) {
         for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
             if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                // 尝试 target/action
                 if (rule[@"targetClass"] && rule[@"actionSelector"]) {
                     SEL action = NSSelectorFromString(rule[@"actionSelector"]);
                     @try {
@@ -458,24 +445,19 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                             if ([NSStringFromClass([target class]) isEqualToString:rule[@"targetClass"]]) {
                                 ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
                                 showToast(@"⏩ 已自动跳过 (Gesture)");
-
                                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                                    if (adWindow && !adWindow.hidden) {
-                                        hideContainer();
-                                    }
+                                    hideAdWindow();
                                 });
                                 return;
                             }
                         }
                     } @catch (NSException *e) {}
                 }
+                // 强制设手势状态
                 [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
                 showToast(@"⏩ 已自动跳过 (Gesture State)");
-
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (adWindow && !adWindow.hidden) {
-                        hideContainer();
-                    }
+                    hideAdWindow();
                 });
                 return;
             }
@@ -484,7 +466,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     // ---------- 路径3：终极兜底 ----------
-    hideContainer();
+    hideAdWindow();
 }
 
 // ==================== 自动跳过扫描 ====================
@@ -499,8 +481,8 @@ static void applyAllSavedRules(void) {
             if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
-                if (matched && !matched.hidden && matched.alpha > 0) {
-                    NSLog(@"[AutoSkip] 规则命中，自动跳过");
+                if (matched && !matched.hidden && matched.alpha > 0 && matched.window) {
+                    NSLog(@"[AutoSkip] 规则命中，自动跳过: %@", rule[@"buttonTextPattern"]);
                     triggerSkip(matched, rule);
                     return;
                 }
@@ -541,7 +523,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（含学习，增加容器类） ====================
+// ==================== 核心分析（含学习） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -569,8 +551,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             cur = cur.superview;
         }
         NSString *windowClass = cur ? NSStringFromClass([cur class]) : @"";
-        // 记录容器视图（直接父视图）
-        NSString *containerClass = chainArray.count >= 2 ? chainArray[1] : nil;
 
         [out appendString:@"📊 视图层级链:\n"];
         cur = actualView;
@@ -680,7 +660,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         rule[@"buttonTextPattern"] = buttonText;
         rule[@"hierarchyChain"] = chainArray;
         rule[@"windowClass"] = windowClass;
-        if (containerClass) rule[@"containerClass"] = containerClass;
 
         BOOL hasRule = NO;
         for (NSDictionary *info in taInfo) {
