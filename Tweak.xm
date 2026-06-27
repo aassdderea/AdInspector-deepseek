@@ -40,7 +40,7 @@ static UIWindow *getKeyWindow(void) {
     return nil;
 }
 
-// ==================== 独立悬浮窗（永不消失） ====================
+// ==================== 独立悬浮窗 ====================
 @class AdInspectorPanel;
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, weak) AdInspectorPanel *panel;
@@ -198,12 +198,14 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
         for (NSInteger i = 0; i < rules.count; i++) {
             NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 容器:%@\n层级链:%@\n",
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 窗口:%@ 目标:%@.%@\n层级链:%@\n",
              (long)i+1,
              rule[@"buttonClass"],
              rule[@"buttonTextPattern"],
              rule[@"triggerType"] ?: @"未知",
-             rule[@"containerClass"] ?: @"未知",
+             rule[@"windowClass"] ?: @"未知",
+             rule[@"targetClass"] ?: @"-",
+             rule[@"actionSelector"] ?: @"-",
              [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
         }
         [self showLog:out];
@@ -406,10 +408,13 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
     NSString *triggerType = rule[@"triggerType"];
     NSString *containerClass = rule[@"containerClass"];
+    NSString *windowClass = rule[@"windowClass"];
+    NSString *targetClass = rule[@"targetClass"];
+    NSString *actionStr = rule[@"actionSelector"];
 
-    // 强制关闭函数
+    // 强制关闭函数（多层兜底）
     void (^forceClose)(void) = ^{
-        // 1. 尝试隐藏容器
+        // 1. 隐藏容器
         if (containerClass) {
             UIView *container = view;
             while (container && ![NSStringFromClass([container class]) isEqualToString:containerClass]) {
@@ -421,14 +426,20 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 return;
             }
         }
-        // 2. 尝试获取当前窗口并隐藏
-        UIWindow *currentWin = view.window;
-        if (currentWin && !currentWin.hidden) {
-            currentWin.hidden = YES;
-            showToast(@"⏩ 已关闭广告窗口");
-            return;
+        // 2. 按窗口类名隐藏窗口
+        if (windowClass) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *win in [(UIWindowScene *)scene windows]) {
+                    if ([NSStringFromClass([win class]) isEqualToString:windowClass] && !win.hidden) {
+                        win.hidden = YES;
+                        showToast(@"⏩ 已关闭广告窗口");
+                        return;
+                    }
+                }
+            }
         }
-        // 3. 遍历所有窗口找到包含此按钮的窗口并隐藏
+        // 3. 查找包含按钮的窗口并隐藏
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *win in [(UIWindowScene *)scene windows]) {
@@ -440,7 +451,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 }
             }
         }
-        // 4. 最后手段：隐藏所有非主窗口
+        // 4. 隐藏所有非主窗口（最后手段）
         UIWindow *keyWin = getKeyWindow();
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
@@ -454,13 +465,18 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     };
 
-    // ---------- 路径1：UIControl 事件 ----------
-    if ([triggerType isEqualToString:@"controlEvent"]) {
-        if ([view isKindOfClass:[UIControl class]]) {
-            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
-            [(UIControl *)view sendActionsForControlEvents:events];
-            showToast(@"⏩ 已模拟点击");
-
+    // ---------- 优先直接调用 target/action ----------
+    if (targetClass && actionStr) {
+        SEL action = NSSelectorFromString(actionStr);
+        // 查找 target 对象（沿响应链找）
+        id target = view;
+        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
+            target = [target nextResponder];
+        }
+        if (target && [target respondsToSelector:action]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
+            showToast(@"⏩ 已直接调用跳过方法");
+            // 延迟检查，如果还在则强制关闭
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (!view.hidden && view.alpha > 0) {
                     forceClose();
@@ -470,20 +486,35 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // ---------- 路径2：手势 ----------
+    // ---------- UIControl 事件（备用） ----------
+    if ([triggerType isEqualToString:@"controlEvent"]) {
+        if ([view isKindOfClass:[UIControl class]]) {
+            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
+            [(UIControl *)view sendActionsForControlEvents:events];
+            showToast(@"⏩ 已模拟点击");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (!view.hidden && view.alpha > 0) {
+                    forceClose();
+                }
+            });
+            return;
+        }
+    }
+
+    // ---------- 手势路径 ----------
     NSString *gestureClass = rule[@"gestureClass"];
     UIView *cur = view;
     while (cur) {
         for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
             if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                if (rule[@"targetClass"] && rule[@"actionSelector"]) {
-                    SEL action = NSSelectorFromString(rule[@"actionSelector"]);
+                if (targetClass && actionStr) {
+                    SEL action = NSSelectorFromString(actionStr);
                     @try {
                         NSArray *tgts = [gr valueForKey:@"_targets"];
                         for (id t in tgts) {
-                            id target = [t valueForKey:@"_target"];
-                            if ([NSStringFromClass([target class]) isEqualToString:rule[@"targetClass"]]) {
-                                ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                            id tgt = [t valueForKey:@"_target"];
+                            if ([NSStringFromClass([tgt class]) isEqualToString:targetClass]) {
+                                ((void (*)(id, SEL, id))objc_msgSend)(tgt, action, gr);
                                 showToast(@"⏩ 已模拟手势");
                                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                                     if (!view.hidden && view.alpha > 0) {
@@ -508,7 +539,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         cur = cur.superview;
     }
 
-    // ---------- 路径3：直接暴力关闭 ----------
+    // ---------- 终极兜底 ----------
     forceClose();
 }
 
@@ -534,13 +565,12 @@ static void applyAllSavedRules(void) {
     }
 }
 
-// ==================== 增强的跳过按钮识别 ====================
+// ==================== 按钮识别 ====================
 static BOOL isSkipText(NSString *text) {
     if (!text || text.length == 0) return NO;
     NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"];
     for (NSString *keyword in keywords) {
-        if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound &&
-            text.length <= 15) {
+        if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound && text.length <= 15) {
             return YES;
         }
     }
@@ -566,7 +596,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（学习） ====================
+// ==================== 核心分析（学习，记录窗口和目标） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -583,6 +613,9 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     }
 
     @try {
+        UIWindow *adWindow = actualView.window;
+        NSString *windowClass = adWindow ? NSStringFromClass([adWindow class]) : @"未知";
+
         NSMutableString *out = [NSMutableString string];
         [out appendFormat:@"\n══════ %@ ══════\n",
          [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
@@ -668,7 +701,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
 
-        [out appendString:@"\n🔍 诊断信息:\n"];
+        [out appendFormat:@"\n🔍 诊断信息:\n  广告窗口: %@\n", windowClass];
         [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])];
         [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)];
         [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(actualView.bounds)];
@@ -703,16 +736,19 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         rule[@"buttonTextPattern"] = buttonText;
         rule[@"hierarchyChain"] = chainArray;
         if (containerClass) rule[@"containerClass"] = containerClass;
+        if (windowClass) rule[@"windowClass"] = windowClass;
 
-        BOOL hasRule = NO;
+        // 提取 targetClass 和 action (优先 UIControl)
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
                 rule[@"triggerType"] = @"controlEvent";
                 rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
-                hasRule = YES; break;
+                rule[@"targetClass"] = info[@"targetClass"];
+                rule[@"actionSelector"] = info[@"action"];
+                break;
             }
         }
-        if (!hasRule) {
+        if (!rule[@"triggerType"]) {
             for (NSDictionary *info in taInfo) {
                 if (info[@"gestureClass"] && info[@"targetClass"] && info[@"action"]) {
                     rule[@"triggerType"] = @"gesture";
@@ -720,31 +756,33 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                     rule[@"targetClass"] = info[@"targetClass"];
                     rule[@"actionSelector"] = info[@"action"];
                     rule[@"gestureViewClass"] = info[@"viewClass"];
-                    hasRule = YES; break;
+                    break;
                 }
             }
         }
-        if (!hasRule) {
+        if (!rule[@"triggerType"]) {
             cur = actualView;
             while (cur) {
                 for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
                     rule[@"triggerType"] = @"gesture";
                     rule[@"gestureClass"] = NSStringFromClass([gr class]);
                     rule[@"gestureViewClass"] = NSStringFromClass([cur class]);
-                    hasRule = YES; break;
+                    break;
                 }
-                if (hasRule) break;
+                if (rule[@"triggerType"]) break;
                 cur = cur.superview;
             }
         }
-        if (!hasRule && [actualView isKindOfClass:[UIControl class]]) {
+        if (!rule[@"triggerType"] && [actualView isKindOfClass:[UIControl class]]) {
             rule[@"triggerType"] = @"controlEvent";
             rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
-            hasRule = YES;
         }
 
-        if (hasRule) saveRule(rule);
-        else showToast(@"❌ 无法学习触发方式");
+        if (rule[@"triggerType"]) {
+            saveRule(rule);
+        } else {
+            showToast(@"❌ 无法学习触发方式");
+        }
     } @catch (NSException *e) {
         showToast(@"⚠️ 分析异常");
     }
@@ -820,7 +858,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow.hidden = NO;
         }
 
-        showToast(@"🔍 已激活 | 点击跳过/广告/关闭学习 | 双指长按呼出面板");
+        showToast(@"🔍 已激活 | 点击“跳过/广告/关闭”学习 | 双指长按呼出面板");
         [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
             if (s_floatWindow) s_floatWindow.hidden = NO;
