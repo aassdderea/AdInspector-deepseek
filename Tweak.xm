@@ -428,30 +428,30 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *actionStr = rule[@"actionSelector"];
     NSString *gestureClass = rule[@"gestureClass"];
 
-    // 1. 如果有明确的 target/action（controlEvent 且已知方法），直接调用
-    if (targetClass && actionStr) {
-        SEL action = NSSelectorFromString(actionStr);
-        id target = view;
-        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
-            target = [target nextResponder];
-        }
-        if (target && [target respondsToSelector:action]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
-            showToast(@"⏩ 已自动跳过");
-        }
-    } else if ([triggerType isEqualToString:@"controlEvent"]) {
-        // 纯 controlEvent 但没有 target，模拟点击
-        if ([view isKindOfClass:[UIControl class]]) {
-            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
-            [(UIControl *)view sendActionsForControlEvents:events];
-            showToast(@"⏩ 已自动跳过");
-        }
-    } else if ([triggerType isEqualToString:@"gesture"]) {
-        // 手势类型：强制触发手势
+    // 对于手势类型，先尝试触发所有target-action，然后强制手势状态，最后移除容器
+    if ([triggerType isEqualToString:@"gesture"]) {
         UIView *cur = view;
         while (cur) {
             for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
                 if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                    // 尝试调用所有 target/action
+                    @try {
+                        NSArray *tgts = [gr valueForKey:@"_targets"];
+                        for (id t in tgts) {
+                            id target = [t valueForKey:@"_target"];
+                            id actionObj = [t valueForKey:@"_action"];
+                            SEL action = NULL;
+                            if ([actionObj isKindOfClass:[NSString class]]) {
+                                action = NSSelectorFromString(actionObj);
+                            } else if ([actionObj isKindOfClass:[NSValue class]]) {
+                                action = (SEL)[actionObj pointerValue];
+                            }
+                            if (target && action) {
+                                ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                            }
+                        }
+                    } @catch (NSException *e) {}
+                    // 强制设置手势状态
                     [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
                     showToast(@"⏩ 已自动跳过");
                     break;
@@ -461,9 +461,9 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 2. 延迟移除广告根容器（确保所有触发方式最终都移除视图）
+    // 通用延迟移除逻辑：针对所有类型，确保广告容器被移除
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // 优先移除已知的容器（CSJSplashView 等）
+        // 1. 如果规则包含已知容器类名，直接移除
         if (containerClass) {
             UIView *container = view;
             while (container && ![NSStringFromClass([container class]) isEqualToString:containerClass]) {
@@ -474,15 +474,17 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 return;
             }
         }
-        // 若找不到，尝试自动查找广告根容器
+        // 2. 自动查找广告根容器（例如 GDTSplashDLView）
         UIView *adRoot = findAdContainer(view);
         if (adRoot) {
             [adRoot removeFromSuperview];
             return;
         }
-        // 如果仍失败，移除按钮的父视图（兜底）
-        if (view.superview) {
-            [view.superview removeFromSuperview];
+        // 3. 如果上述都失败，尝试隐藏按钮所在的窗口（排除主窗口）
+        UIWindow *adWindow = view.window;
+        UIWindow *keyWin = getKeyWindow();
+        if (adWindow && adWindow != keyWin && adWindow != s_floatWindow && !adWindow.hidden) {
+            adWindow.hidden = YES;
         }
     });
 }
