@@ -399,7 +399,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过（可靠逻辑） ====================
+// ==================== 自动跳过（仅模拟点击，绝不隐藏窗口） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -415,54 +415,44 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
+    // 手势类型：找到按钮的父视图中的手势，直接触发其 target-action
     NSString *gestureClass = rule[@"gestureClass"];
     UIView *cur = view;
     while (cur) {
         for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
             if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                if (rule[@"targetClass"] && rule[@"actionSelector"]) {
-                    SEL action = NSSelectorFromString(rule[@"actionSelector"]);
-                    @try {
-                        NSArray *tgts = [gr valueForKey:@"_targets"];
-                        for (id t in tgts) {
-                            id target = [t valueForKey:@"_target"];
-                            if ([NSStringFromClass([target class]) isEqualToString:rule[@"targetClass"]]) {
-                                ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
-                                showToast(@"⏩ 已自动跳过");
-                                return;
-                            }
+                // 尝试调用所有 target-action
+                @try {
+                    NSArray *tgts = [gr valueForKey:@"_targets"];
+                    for (id t in tgts) {
+                        id target = [t valueForKey:@"_target"];
+                        id actionObj = [t valueForKey:@"_action"];
+                        SEL action = NULL;
+                        if ([actionObj isKindOfClass:[NSString class]]) {
+                            action = NSSelectorFromString(actionObj);
+                        } else if ([actionObj isKindOfClass:[NSValue class]]) {
+                            action = (SEL)[actionObj pointerValue];
                         }
-                    } @catch (NSException *e) {}
-                }
-                [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (!view.window || view.window.hidden) return;
-                    if (view.window == getKeyWindow()) {
-                        // 移除广告容器而不隐藏主窗口
-                        UIView *container = view;
-                        while (container && ![container isKindOfClass:[UIWindow class]]) {
-                            if ([NSStringFromClass([container class]) containsString:@"Splash"] ||
-                                [NSStringFromClass([container class]) containsString:@"Root"] ||
-                                [NSStringFromClass([container class]) containsString:@"Ad"]) {
-                                [container removeFromSuperview];
-                                break;
-                            }
-                            container = container.superview;
+                        if (target && action) {
+                            ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                            showToast(@"⏩ 已自动跳过");
+                            return;
                         }
-                    } else {
-                        view.window.hidden = YES;
                     }
-                    showToast(@"⏩ 已强制关闭广告窗口");
-                });
+                } @catch (NSException *e) {}
+                // 如果无法获取 target-action，退而求其次：设置手势状态
+                [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
+                showToast(@"⏩ 已自动跳过");
                 return;
             }
         }
         cur = cur.superview;
     }
 
-    if (view.window && view.window != getKeyWindow()) {
-        view.window.hidden = YES;
-        showToast(@"⏩ 已强制关闭广告窗口");
+    // 最终保底：如果按钮是 UIControl，发送事件；否则无操作，避免隐藏窗口
+    if ([view isKindOfClass:[UIControl class]]) {
+        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+        showToast(@"⏩ 已尝试自动跳过");
     }
 }
 
