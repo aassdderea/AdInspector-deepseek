@@ -14,7 +14,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
 static void showToast(NSString *message);
 static UIWindow *getKeyWindow(void);
-static BOOL viewContainsClass(UIView *root, NSString *className);
 static UIView *findSkipLabelInView(UIView *root);
 
 // ==================== 分析防抖 ====================
@@ -508,15 +507,6 @@ static UIView *findSkipLabelInView(UIView *root) {
         if (found) return found;
     }
     return nil;
-}
-
-// ==================== 辅助函数 ====================
-static BOOL viewContainsClass(UIView *root, NSString *className) {
-    if ([NSStringFromClass([root class]) isEqualToString:className]) return YES;
-    for (UIView *sub in root.subviews) {
-        if (viewContainsClass(sub, className)) return YES;
-    }
-    return NO;
 }
 
 // ==================== 核心分析（学习） ====================
