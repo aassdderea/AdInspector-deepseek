@@ -399,7 +399,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 强力跳过引擎（强化隐藏窗口） ====================
+// ==================== 强力跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -411,11 +411,10 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *targetClass = rule[@"targetClass"];
     NSString *actionStr = rule[@"actionSelector"];
 
-    // 获取广告窗口，排除主窗口和插件窗口
     UIWindow *adWindow = view.window;
     UIWindow *keyWin = getKeyWindow();
     if (adWindow == keyWin || adWindow == s_floatWindow) {
-        adWindow = nil; // 不隐藏关键窗口
+        adWindow = nil;
     }
 
     void (^removeContainer)(void) = ^{
@@ -438,32 +437,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     };
 
-    // 1. 如果有 target/action，优先调用
-    if (targetClass && actionStr) {
-        SEL action = NSSelectorFromString(actionStr);
-        id target = view;
-        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
-            target = [target nextResponder];
-        }
-        if (target && [target respondsToSelector:action]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
-            showToast(@"⏩ 已自动跳过");
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                // 如果调用后按钮还在，移除容器或隐藏窗口
-                if (view && !view.hidden && view.superview) {
-                    removeContainer();
-                }
-                // 如果容器移除后广告窗口仍在，且不是主窗口，则隐藏
-                if (adWindow && !adWindow.hidden) {
-                    hideAdWindow();
-                }
-            });
-            return;
-        }
-    }
-
-    // 2. 如果是 UIControl 事件，模拟点击
-    if ([triggerType isEqualToString:@"controlEvent"]) {
+    // 1. 如果是 controlEvent 且有 target/action
+    if ([triggerType isEqualToString:@"controlEvent"] && targetClass && actionStr) {
         if ([view isKindOfClass:[UIControl class]]) {
             UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
             [(UIControl *)view sendActionsForControlEvents:events];
@@ -480,18 +455,46 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 3. 手势类型且无法调用 target/action，直接隐藏广告窗口
+    // 2. 手势类型：强制触发手势状态，然后隐藏窗口
     if ([triggerType isEqualToString:@"gesture"]) {
-        hideAdWindow();
-        showToast(@"⏩ 已关闭广告窗口");
+        NSString *gestureClass = rule[@"gestureClass"];
+        UIView *cur = view;
+        while (cur) {
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                    // 强制设置手势状态为Recognized
+                    [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
+                    showToast(@"⏩ 已触发广告手势");
+                    // 延迟隐藏窗口
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        hideAdWindow();
+                    });
+                    return;
+                }
+            }
+            cur = cur.superview;
+        }
+        // 如果没找到手势，直接移除容器或隐藏窗口
+        removeContainer();
+        if (adWindow && !adWindow.hidden) {
+            hideAdWindow();
+        }
         return;
     }
 
-    // 4. 最终兜底：移除容器或隐藏窗口
-    removeContainer();
-    if (adWindow && !adWindow.hidden) {
-        hideAdWindow();
+    // 3. 通用兜底
+    if ([view isKindOfClass:[UIControl class]]) {
+        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+        showToast(@"⏩ 已自动跳过");
     }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (view && !view.hidden && view.superview) {
+            removeContainer();
+        }
+        if (adWindow && !adWindow.hidden) {
+            hideAdWindow();
+        }
+    });
 }
 
 // ==================== 自动跳过扫描 ====================
@@ -507,6 +510,7 @@ static void applyAllSavedRules(void) {
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
                 if (matched && !matched.hidden && matched.alpha > 0) {
+                    NSLog(@"[AutoSkip] 匹配成功：%@", rule[@"buttonTextPattern"]);
                     triggerSkip(matched, rule);
                     return;
                 }
