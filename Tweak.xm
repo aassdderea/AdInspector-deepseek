@@ -13,8 +13,6 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
 static void showToast(NSString *message);
-static UIWindow *getKeyWindow(void);
-static BOOL viewContainsClass(UIView *root, NSString *className);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -369,7 +367,6 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
         else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
         else currentText = root.accessibilityLabel;
 
-        // 静默匹配，避免日志刷屏，仅在命中时输出
         if (currentText) {
             BOOL textMatches = NO;
             if (textPattern.length <= 2) {
@@ -385,9 +382,7 @@ static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
                     [currentChain addObject:NSStringFromClass([cur class])];
                     cur = cur.superview;
                 }
-                if ([currentChain isEqualToArray:chain]) {
-                    return root;
-                }
+                if ([currentChain isEqualToArray:chain]) return root;
             }
         }
     }
@@ -403,16 +398,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 辅助函数 ====================
-static BOOL viewContainsClass(UIView *root, NSString *className) {
-    if ([NSStringFromClass([root class]) isEqualToString:className]) return YES;
-    for (UIView *sub in root.subviews) {
-        if (viewContainsClass(sub, className)) return YES;
-    }
-    return NO;
-}
-
-// ==================== 强力跳过引擎（保护主窗口） ====================
+// ==================== 强力跳过（仅操作容器，绝不隐藏窗口） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -424,49 +410,35 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *targetClass = rule[@"targetClass"];
     NSString *actionStr = rule[@"actionSelector"];
 
-    UIWindow *keyWin = getKeyWindow(); // 获取当前主窗口，后续操作绝不可隐藏它
     NSLog(@"[AutoSkip] 触发跳过: 容器=%@, 目标=%@.%@", containerClass, targetClass, actionStr);
 
-    void (^forceClose)(void) = ^{
-        // 1. 查找包含容器类名的窗口（广告窗口）并隐藏
+    // 隐藏容器（广告主视图）
+    void (^removeAd)(void) = ^{
         if (containerClass) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                for (UIWindow *win in [(UIWindowScene *)scene windows]) {
-                    if (win == keyWin || win == s_floatWindow) continue; // 保护主窗口和插件窗口
-                    if (viewContainsClass(win, containerClass)) {
-                        win.hidden = YES;
-                        showToast(@"⏩ 已关闭广告窗口 (容器)");
-                        NSLog(@"[AutoSkip] 隐藏窗口: %@", win);
-                        return;
-                    }
-                }
+            UIView *container = view;
+            while (container && ![NSStringFromClass([container class]) isEqualToString:containerClass]) {
+                container = container.superview;
+            }
+            if (container) {
+                container.hidden = YES;
+                [container removeFromSuperview];
+                showToast(@"⏩ 广告已移除");
+                NSLog(@"[AutoSkip] 已移除容器 %@", containerClass);
+                return;
             }
         }
-        // 2. 尝试当前按钮所在的窗口
+        // 容器找不到，尝试隐藏按钮所在窗口（仍加保护）
         UIWindow *currentWin = view.window;
-        if (currentWin && currentWin != keyWin && currentWin != s_floatWindow && !currentWin.hidden) {
+        if (currentWin && currentWin != s_floatWindow && !currentWin.hidden && currentWin != getKeyWindow()) {
             currentWin.hidden = YES;
-            showToast(@"⏩ 已关闭广告窗口");
-            NSLog(@"[AutoSkip] 隐藏窗口: %@", currentWin);
+            showToast(@"⏩ 广告窗口已关闭");
+            NSLog(@"[AutoSkip] 已隐藏窗口 %@", currentWin);
             return;
         }
-        // 3. 最后手段：隐藏除主窗口和插件窗口外的第一个可见窗口（通常是广告窗口）
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *win in [(UIWindowScene *)scene windows]) {
-                if (win != keyWin && win != s_floatWindow && !win.hidden && win.alpha > 0) {
-                    win.hidden = YES;
-                    showToast(@"⏩ 已关闭其他窗口");
-                    NSLog(@"[AutoSkip] 隐藏窗口: %@", win);
-                    return;
-                }
-            }
-        }
-        NSLog(@"[AutoSkip] 没有找到可隐藏的窗口");
+        showToast(@"⚠️ 无法移除广告");
     };
 
-    // 优先直接调用 target/action
+    // 优先调用 target/action
     if (targetClass && actionStr) {
         SEL action = NSSelectorFromString(actionStr);
         id target = view;
@@ -477,7 +449,9 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
             showToast(@"⏩ 已调用跳过方法");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                forceClose();
+                if (!view.hidden && view.alpha > 0) {
+                    removeAd();
+                }
             });
             return;
         }
@@ -489,35 +463,27 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             [(UIControl *)view sendActionsForControlEvents:events];
             showToast(@"⏩ 已模拟点击");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                forceClose();
+                if (!view.hidden && view.alpha > 0) {
+                    removeAd();
+                }
             });
             return;
         }
     }
-    forceClose();
+    // 直接移除
+    removeAd();
 }
 
-// ==================== 自动跳过扫描（带关键日志） ====================
+// ==================== 自动跳过扫描 ====================
 static void applyAllSavedRules(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *rules = [ud arrayForKey:kRulesKey];
-    if (!rules.count) {
-        // 规则为空时也输出一次日志（避免刷屏，可加防抖，此处简单处理）
-        static BOOL loggedEmpty = NO;
-        if (!loggedEmpty) {
-            NSLog(@"[AutoSkip] 规则为空，跳过扫描");
-            loggedEmpty = YES;
-        }
-        return;
-    }
-
-    NSLog(@"[AutoSkip] 扫描开始，规则数: %lu", (unsigned long)rules.count);
+    if (!rules.count) return;
 
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in [(UIWindowScene *)scene windows]) {
             if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
-            NSLog(@"[AutoSkip] 检查窗口: %@ (hidden=%d)", NSStringFromClass([window class]), window.hidden);
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
                 if (matched && !matched.hidden && matched.alpha > 0) {
@@ -528,7 +494,6 @@ static void applyAllSavedRules(void) {
             }
         }
     }
-    NSLog(@"[AutoSkip] 扫描结束，未命中");
 }
 
 // ==================== 按钮识别 ====================
@@ -803,7 +768,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 }
 %end
 
-// ==================== 初始化（增加启动日志） ====================
+// ==================== 初始化 ====================
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *activeScene = nil;
@@ -824,7 +789,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow.hidden = NO;
         }
 
-        NSLog(@"[AdInspector] 插件已激活，启动定时扫描");
+        NSLog(@"[AdInspector] 插件已激活，定时扫描启动");
         showToast(@"🔍 已激活 | 点击跳过/广告/关闭学习 | 双指长按呼出面板");
         
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
