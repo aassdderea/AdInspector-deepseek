@@ -428,7 +428,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
                     BOOL triggered = NO;
 
-                    // 2a. 通过 KVC 获取 _targets，遍历所有 target-action
+                    // 2a. 通过 KVC 获取 _targets
                     @try {
                         NSArray *tgts = [gr valueForKey:@"_targets"];
                         if (tgts && [tgts isKindOfClass:[NSArray class]]) {
@@ -441,7 +441,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                                 } else if ([actionObj isKindOfClass:[NSValue class]]) {
                                     action = (SEL)[actionObj pointerValue];
                                 } else if ([actionObj respondsToSelector:@selector(selector)]) {
-                                    // 可能是 NSInvocation
                                     action = (SEL)[actionObj performSelector:@selector(selector)];
                                 }
                                 if (target && action && [target respondsToSelector:action]) {
@@ -450,11 +449,9 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                                 }
                             }
                         }
-                    } @catch (NSException *e) {
-                        NSLog(@"[AutoSkip] _targets 提取失败: %@", e);
-                    }
+                    } @catch (NSException *e) {}
 
-                    // 2b. 如果 KVC 失败，尝试手动枚举可能的 target 和 action
+                    // 2b. 直接调用已知的 target/action
                     if (!triggered && targetClass && actionStr) {
                         SEL action = NSSelectorFromString(actionStr);
                         if ([cur respondsToSelector:action]) {
@@ -471,7 +468,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                         } @catch (NSException *e) {}
                     }
 
-                    // 2d. 最后退路：向按钮发送 UIControlEventTouchUpInside
+                    // 2d. 向按钮发送 UIControlEventTouchUpInside
                     if (!triggered && [view isKindOfClass:[UIControl class]]) {
                         [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
                         triggered = YES;
