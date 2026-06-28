@@ -399,7 +399,7 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 自动跳过（仅模拟点击，绝不隐藏窗口） ====================
+// ==================== 增强的手势跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -407,6 +407,11 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     NSString *triggerType = rule[@"triggerType"];
+    NSString *gestureClass = rule[@"gestureClass"];
+    NSString *targetClass = rule[@"targetClass"];
+    NSString *actionStr = rule[@"actionSelector"];
+
+    // 路径1：UIControl 事件
     if ([triggerType isEqualToString:@"controlEvent"]) {
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
@@ -415,44 +420,79 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 手势类型：找到按钮的父视图中的手势，直接触发其 target-action
-    NSString *gestureClass = rule[@"gestureClass"];
-    UIView *cur = view;
-    while (cur) {
-        for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
-            if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                // 尝试调用所有 target-action
-                @try {
-                    NSArray *tgts = [gr valueForKey:@"_targets"];
-                    for (id t in tgts) {
-                        id target = [t valueForKey:@"_target"];
-                        id actionObj = [t valueForKey:@"_action"];
-                        SEL action = NULL;
-                        if ([actionObj isKindOfClass:[NSString class]]) {
-                            action = NSSelectorFromString(actionObj);
-                        } else if ([actionObj isKindOfClass:[NSValue class]]) {
-                            action = (SEL)[actionObj pointerValue];
+    // 路径2：增强手势分析
+    if ([triggerType isEqualToString:@"gesture"] && gestureClass) {
+        UIView *cur = view;
+        while (cur) {
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                    BOOL triggered = NO;
+
+                    // 2a. 通过 KVC 获取 _targets，遍历所有 target-action
+                    @try {
+                        NSArray *tgts = [gr valueForKey:@"_targets"];
+                        if (tgts && [tgts isKindOfClass:[NSArray class]]) {
+                            for (id t in tgts) {
+                                id target = [t valueForKey:@"_target"];
+                                id actionObj = [t valueForKey:@"_action"];
+                                SEL action = NULL;
+                                if ([actionObj isKindOfClass:[NSString class]]) {
+                                    action = NSSelectorFromString(actionObj);
+                                } else if ([actionObj isKindOfClass:[NSValue class]]) {
+                                    action = (SEL)[actionObj pointerValue];
+                                } else if ([actionObj respondsToSelector:@selector(selector)]) {
+                                    // 可能是 NSInvocation
+                                    action = (SEL)[actionObj performSelector:@selector(selector)];
+                                }
+                                if (target && action && [target respondsToSelector:action]) {
+                                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                                    triggered = YES;
+                                }
+                            }
                         }
-                        if (target && action) {
-                            ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
-                            showToast(@"⏩ 已自动跳过");
-                            return;
+                    } @catch (NSException *e) {
+                        NSLog(@"[AutoSkip] _targets 提取失败: %@", e);
+                    }
+
+                    // 2b. 如果 KVC 失败，尝试手动枚举可能的 target 和 action
+                    if (!triggered && targetClass && actionStr) {
+                        SEL action = NSSelectorFromString(actionStr);
+                        if ([cur respondsToSelector:action]) {
+                            ((void (*)(id, SEL, id))objc_msgSend)(cur, action, gr);
+                            triggered = YES;
                         }
                     }
-                } @catch (NSException *e) {}
-                // 如果无法获取 target-action，退而求其次：设置手势状态
-                [gr setValue:@(UIGestureRecognizerStateRecognized) forKey:@"state"];
-                showToast(@"⏩ 已自动跳过");
-                return;
+
+                    // 2c. 强制设置手势状态
+                    if (!triggered) {
+                        @try {
+                            [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                            triggered = YES;
+                        } @catch (NSException *e) {}
+                    }
+
+                    // 2d. 最后退路：向按钮发送 UIControlEventTouchUpInside
+                    if (!triggered && [view isKindOfClass:[UIControl class]]) {
+                        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        triggered = YES;
+                    }
+
+                    if (triggered) {
+                        showToast(@"⏩ 已自动跳过");
+                        return;
+                    }
+                }
             }
+            cur = cur.superview;
         }
-        cur = cur.superview;
     }
 
-    // 最终保底：如果按钮是 UIControl，发送事件；否则无操作，避免隐藏窗口
+    // 最终保底
     if ([view isKindOfClass:[UIControl class]]) {
         [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
-        showToast(@"⏩ 已尝试自动跳过");
+        showToast(@"⏩ 已自动跳过");
+    } else {
+        showToast(@"⚠️ 未能跳过，请反馈日志");
     }
 }
 
@@ -468,7 +508,7 @@ static void applyAllSavedRules(void) {
             if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
-                if (matched) {
+                if (matched && !matched.hidden && matched.alpha > 0) {
                     triggerSkip(matched, rule);
                     return;
                 }
@@ -650,10 +690,13 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (containerClass) rule[@"containerClass"] = containerClass;
         if (windowClass) rule[@"windowClass"] = windowClass;
 
+        // 提取 target/action
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
                 rule[@"triggerType"] = @"controlEvent";
                 rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
+                rule[@"targetClass"] = info[@"targetClass"];
+                rule[@"actionSelector"] = info[@"action"];
                 break;
             }
         }
