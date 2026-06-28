@@ -199,7 +199,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
         for (NSInteger i = 0; i < rules.count; i++) {
             NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 容器:%@ 目标:%@.%@\n层级链:%@\n",
+            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 容器:%@ 目标:%@.%@\n层级链:%@\n手势分析:%@\n",
              (long)i+1,
              rule[@"buttonClass"],
              rule[@"buttonTextPattern"],
@@ -207,7 +207,8 @@ static AdInspectorWindow *s_floatWindow = nil;
              rule[@"containerClass"] ?: @"未知",
              rule[@"targetClass"] ?: @"-",
              rule[@"actionSelector"] ?: @"-",
-             [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
+             [rule[@"hierarchyChain"] componentsJoinedByString:@" → "],
+             rule[@"gestureAnalysis"] ?: @"无"];
         }
         [self showLog:out];
     }
@@ -482,10 +483,31 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
+    // 如果所有手势方式都失败，执行强制关闭逻辑（仅限非主窗口）
+    UIWindow *adWindow = view.window;
+    UIWindow *keyWin = getKeyWindow();
+    if (adWindow && adWindow != keyWin && adWindow != s_floatWindow) {
+        adWindow.hidden = YES;
+        showToast(@"⏩ 已强制关闭广告窗口");
+        return;
+    }
+
+    // 如果窗口是主窗口，尝试移除广告容器
+    UIView *container = view;
+    while (container && ![container isKindOfClass:[UIWindow class]]) {
+        if ([NSStringFromClass([container class]) containsString:@"Splash"] ||
+            [NSStringFromClass([container class]) containsString:@"Root"]) {
+            [container removeFromSuperview];
+            showToast(@"⏩ 已移除广告容器");
+            return;
+        }
+        container = container.superview;
+    }
+
     // 最终保底
     if ([view isKindOfClass:[UIControl class]]) {
         [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
-        showToast(@"⏩ 已自动跳过");
+        showToast(@"⏩ 已尝试自动跳过");
     } else {
         showToast(@"⚠️ 未能跳过，请反馈日志");
     }
@@ -602,6 +624,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         [out appendString:@"\n🎯 Target-Action & 手势:\n"];
         BOOL found = NO;
         NSMutableArray *taInfo = [NSMutableArray array];
+        NSMutableString *gestureAnalysis = [NSMutableString string];
         cur = actualView;
         depth = 0;
         while (cur && depth < 8) {
@@ -622,13 +645,17 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
                 found = YES;
                 [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView];
+                
+                // 详细分析手势
                 BOOL gotTargetInfo = NO;
                 if ([gr respondsToSelector:@selector(_targets)]) {
                     NSArray *tgts = [gr valueForKey:@"_targets"];
                     if (tgts && [tgts isKindOfClass:[NSArray class]]) {
+                        [gestureAnalysis appendFormat:@"手势%@: 有%lu个targets\n", NSStringFromClass([gr class]), (unsigned long)tgts.count];
                         for (id t in tgts) {
                             id target = [t valueForKey:@"_target"];
                             id actionObj = [t valueForKey:@"_action"];
+                            [gestureAnalysis appendFormat:@"  target:%@ action:%@\n", target, actionObj];
                             NSString *actionStr = nil;
                             if ([actionObj isKindOfClass:[NSString class]]) actionStr = actionObj;
                             else if ([actionObj respondsToSelector:@selector(selector)]) actionStr = NSStringFromSelector([actionObj selector]);
@@ -639,7 +666,11 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                                 gotTargetInfo = YES;
                             }
                         }
+                    } else {
+                        [gestureAnalysis appendFormat:@"手势%@: 无_targets或类型不匹配\n", NSStringFromClass([gr class])];
                     }
+                } else {
+                    [gestureAnalysis appendFormat:@"手势%@: 不响应_targets\n", NSStringFromClass([gr class])];
                 }
                 if (!gotTargetInfo) [out appendString:@"    (无法提取 target/action，将使用备用规则)\n"];
             }
@@ -684,6 +715,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         rule[@"hierarchyChain"] = chainArray;
         if (containerClass) rule[@"containerClass"] = containerClass;
         if (windowClass) rule[@"windowClass"] = windowClass;
+        if (gestureAnalysis.length > 0) rule[@"gestureAnalysis"] = gestureAnalysis;
 
         // 提取 target/action
         for (NSDictionary *info in taInfo) {
