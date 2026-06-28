@@ -400,15 +400,14 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 辅助：查找广告根容器 ====================
+// ==================== 辅助：查找广告根容器（放宽条件） ====================
 static UIView *findAdContainer(UIView *view) {
     UIView *cur = view;
     while (cur && ![cur isKindOfClass:[UIWindow class]]) {
         NSString *cls = NSStringFromClass([cur class]);
         if ([cls containsString:@"Splash"] || [cls containsString:@"Root"] || [cls containsString:@"Ad"] || [cls containsString:@"DL"]) {
-            if ([cur.superview isKindOfClass:[UIWindow class]] || [cur.superview isKindOfClass:NSClassFromString(@"UITransitionView")]) {
-                return cur;
-            }
+            // 直接返回最靠近按钮的广告容器，不再检查父视图类型
+            return cur;
         }
         cur = cur.superview;
     }
@@ -428,7 +427,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *actionStr = rule[@"actionSelector"];
     NSString *gestureClass = rule[@"gestureClass"];
 
-    // 对于手势类型，先尝试触发所有target-action，然后强制手势状态，最后移除容器
+    // 对于手势类型，先尝试触发所有target-action，然后强制手势状态
     if ([triggerType isEqualToString:@"gesture"]) {
         UIView *cur = view;
         while (cur) {
@@ -459,9 +458,26 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
             }
             cur = cur.superview;
         }
+    } else if (targetClass && actionStr) {
+        // 如果有明确的 target/action，直接调用
+        SEL action = NSSelectorFromString(actionStr);
+        id target = view;
+        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
+            target = [target nextResponder];
+        }
+        if (target && [target respondsToSelector:action]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(target, action, view);
+            showToast(@"⏩ 已自动跳过");
+        }
+    } else if ([triggerType isEqualToString:@"controlEvent"]) {
+        if ([view isKindOfClass:[UIControl class]]) {
+            UIControlEvents events = [rule[@"controlEvent"] unsignedIntegerValue];
+            [(UIControl *)view sendActionsForControlEvents:events];
+            showToast(@"⏩ 已自动跳过");
+        }
     }
 
-    // 通用延迟移除逻辑：针对所有类型，确保广告容器被移除
+    // 通用延迟移除逻辑：确保广告容器被移除
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // 1. 如果规则包含已知容器类名，直接移除
         if (containerClass) {
