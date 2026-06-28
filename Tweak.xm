@@ -413,7 +413,6 @@ static void clearAllRules(void) {
 static void simulateTouchAtView(UIView *view) {
     if (!view || !view.window) return;
     
-    // 获取按钮中心在屏幕上的坐标
     CGRect frameInScreen = [view convertRect:view.bounds toView:nil];
     CGPoint screenPoint = [view.window convertPoint:CGPointMake(CGRectGetMidX(frameInScreen), CGRectGetMidY(frameInScreen)) toWindow:nil];
     
@@ -423,7 +422,6 @@ static void simulateTouchAtView(UIView *view) {
     id touch = [[touchClass alloc] init];
     
     @try {
-        // 设置触摸属性
         [touch setValue:view.window forKey:@"_window"];
         [touch setValue:view forKey:@"_view"];
         [touch setValue:view forKey:@"_gestureView"];
@@ -433,12 +431,10 @@ static void simulateTouchAtView(UIView *view) {
         [touch setValue:@(1) forKey:@"_tapCount"];
         [touch setValue:@(CACurrentMediaTime()) forKey:@"_timestamp"];
         
-        // 创建事件并发送 began
         id beganEvent = [[NSClassFromString(@"UITouchesEvent") alloc] init];
         [beganEvent setValue:[NSSet setWithObject:touch] forKey:@"_touches"];
         [[UIApplication sharedApplication] sendEvent:beganEvent];
         
-        // 50ms 后发送 ended
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
                 [touch setValue:@(UITouchPhaseEnded) forKey:@"_phase"];
@@ -490,7 +486,7 @@ static void forceRemoveAdView(UIView *view) {
     }
 }
 
-// ==================== 增强的手势跳过引擎 ====================
+// ==================== 跳过引擎（模拟点击优先） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -502,7 +498,19 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     NSString *targetClass = rule[@"targetClass"];
     NSString *actionStr = rule[@"actionSelector"];
 
-    // 路径1：UIControl 事件
+    // 路径1（优先）：模拟真实触摸点击（最可靠，不会假成功）
+    if ([triggerType isEqualToString:@"gesture"] || [triggerType isEqualToString:@"controlEvent"]) {
+        simulateTouchAtView(view);
+        showToast(@"⏩ 已模拟点击");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (view && !view.hidden && view.superview) {
+                forceRemoveAdView(view);
+            }
+        });
+        return;
+    }
+
+    // 路径2：UIControl 事件（备用）
     if ([triggerType isEqualToString:@"controlEvent"]) {
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
@@ -516,7 +524,7 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 路径2：增强手势分析
+    // 路径3：手势分析（备用）
     if ([triggerType isEqualToString:@"gesture"] && gestureClass) {
         UIView *cur = view;
         while (cur) {
@@ -578,16 +586,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 路径3：模拟真实触摸点击（最可靠）
-    simulateTouchAtView(view);
-    showToast(@"⏩ 已模拟点击");
-    
-    // 延迟移除（兜底）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (view && !view.hidden && view.superview) {
-            forceRemoveAdView(view);
-        }
-    });
+    // 路径4：直接移除广告容器（兜底）
+    forceRemoveAdView(view);
 }
 
 // ==================== 自动跳过扫描 ====================
