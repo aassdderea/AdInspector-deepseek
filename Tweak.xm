@@ -15,6 +15,7 @@ static void clearAllRules(void);
 static void showToast(NSString *message);
 static UIWindow *getKeyWindow(void);
 static UIView *findSkipLabelInView(UIView *root);
+static void forceRemoveAdView(UIView *view);  // 新增
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -339,7 +340,6 @@ static void highlightView(UIView *view) {
 static void saveRule(NSDictionary *rule) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *existing = [ud arrayForKey:kRulesKey] ?: @[];
-    // 去重：如果已有相同规则，更新而非重复添加
     NSInteger existingIndex = -1;
     for (NSInteger i = 0; i < existing.count; i++) {
         NSDictionary *r = existing[i];
@@ -352,7 +352,6 @@ static void saveRule(NSDictionary *rule) {
     }
     NSMutableArray *newRules = [existing mutableCopy];
     if (existingIndex >= 0) {
-        // 更新已有规则（增强手势分析）
         [newRules replaceObjectAtIndex:existingIndex withObject:rule];
         showToast(@"🔄 规则已更新（增强分析）");
     } else {
@@ -408,7 +407,49 @@ static void clearAllRules(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// ==================== 增强的手势跳过引擎（手势 + 强制隐藏兜底） ====================
+// ==================== 强制移除广告视图 ====================
+static void forceRemoveAdView(UIView *view) {
+    if (!view) return;
+    
+    // 已知广告类名列表（可扩展）
+    NSArray *adClassNames = @[@"GDTSplashDLView", @"CSJSplashView", @"GDTDLRootView"];
+    
+    // 策略1：根据层级链移除已知广告容器
+    UIView *container = view;
+    while (container && ![container isKindOfClass:[UIWindow class]]) {
+        for (NSString *className in adClassNames) {
+            if ([NSStringFromClass([container class]) isEqualToString:className]) {
+                if (container.superview) {
+                    [container removeFromSuperview];
+                    showToast(@"⏩ 已移除广告容器");
+                    return;
+                }
+            }
+        }
+        container = container.superview;
+    }
+    
+    // 策略2：移除按钮的父视图链中第一个非窗口直接子视图
+    UIView *cur = view;
+    while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+        if ([cur.superview isKindOfClass:[UIWindow class]] || 
+            [cur.superview isKindOfClass:NSClassFromString(@"UITransitionView")]) {
+            [cur removeFromSuperview];
+            showToast(@"⏩ 已移除广告视图");
+            return;
+        }
+        cur = cur.superview;
+    }
+    
+    // 策略3：最后保底，隐藏窗口（排除插件窗口）
+    UIWindow *adWindow = view.window;
+    if (adWindow && ![adWindow isKindOfClass:[AdInspectorWindow class]]) {
+        adWindow.hidden = YES;
+        showToast(@"⏩ 已强制关闭广告窗口");
+    }
+}
+
+// ==================== 增强的手势跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
         [view.window isKindOfClass:[AdInspectorWindow class]]) {
@@ -425,6 +466,12 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
             showToast(@"⏩ 已自动跳过");
+            // 延迟检查是否真的关闭了，没关闭则强制移除
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (view && !view.hidden && view.superview) {
+                    forceRemoveAdView(view);
+                }
+            });
             return;
         }
     }
@@ -437,7 +484,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                 if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
                     BOOL triggered = NO;
 
-                    // 2a. 通过 KVC 获取 _targets
                     @try {
                         NSArray *tgts = [gr valueForKey:@"_targets"];
                         if (tgts && [tgts isKindOfClass:[NSArray class]]) {
@@ -458,7 +504,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                         }
                     } @catch (NSException *e) {}
 
-                    // 2b. 直接调用已知的 target/action
                     if (!triggered && targetClass && actionStr) {
                         SEL action = NSSelectorFromString(actionStr);
                         if ([cur respondsToSelector:action]) {
@@ -467,7 +512,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                         }
                     }
 
-                    // 2c. 强制设置手势状态
                     if (!triggered) {
                         @try {
                             [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
@@ -475,7 +519,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                         } @catch (NSException *e) {}
                     }
 
-                    // 2d. 向按钮发送 UIControlEventTouchUpInside
                     if (!triggered && [view isKindOfClass:[UIControl class]]) {
                         [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
                         triggered = YES;
@@ -483,6 +526,11 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
                     if (triggered) {
                         showToast(@"⏩ 已自动跳过");
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            if (view && !view.hidden && view.superview) {
+                                forceRemoveAdView(view);
+                            }
+                        });
                         return;
                     }
                 }
@@ -491,34 +539,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 路径3：强制隐藏广告窗口（仅限非主窗口，保护主界面）
-    UIWindow *adWindow = view.window;
-    UIWindow *keyWin = getKeyWindow();
-    if (adWindow && adWindow != keyWin && adWindow != s_floatWindow) {
-        adWindow.hidden = YES;
-        showToast(@"⏩ 已强制关闭广告窗口");
-        return;
-    }
-
-    // 路径4：移除广告容器（如果广告在主窗口内）
-    UIView *container = view;
-    while (container && ![container isKindOfClass:[UIWindow class]]) {
-        if ([NSStringFromClass([container class]) containsString:@"Splash"] ||
-            [NSStringFromClass([container class]) containsString:@"Root"]) {
-            [container removeFromSuperview];
-            showToast(@"⏩ 已移除广告容器");
-            return;
-        }
-        container = container.superview;
-    }
-
-    // 最终保底
-    if ([view isKindOfClass:[UIControl class]]) {
-        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
-        showToast(@"⏩ 已尝试自动跳过");
-    } else {
-        showToast(@"⚠️ 未能跳过，请手动点击");
-    }
+    // 路径3：直接移除广告容器
+    forceRemoveAdView(view);
 }
 
 // ==================== 自动跳过扫描 ====================
@@ -573,7 +595,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（学习，每次手动点击都会更新规则） ====================
+// ==================== 核心分析（学习） ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -715,7 +737,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (containerClass) rule[@"containerClass"] = containerClass;
         if (windowClass) rule[@"windowClass"] = windowClass;
 
-        // 提取 target/action
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
                 rule[@"triggerType"] = @"controlEvent";
