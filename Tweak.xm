@@ -440,8 +440,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
                                     action = NSSelectorFromString(actionObj);
                                 } else if ([actionObj isKindOfClass:[NSValue class]]) {
                                     action = (SEL)[actionObj pointerValue];
-                                } else if ([actionObj respondsToSelector:@selector(selector)]) {
-                                    action = (SEL)[actionObj performSelector:@selector(selector)];
                                 }
                                 if (target && action && [target respondsToSelector:action]) {
                                     ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
