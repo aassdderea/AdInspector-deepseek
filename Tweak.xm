@@ -43,7 +43,6 @@ static SEL ATGetSelectorIvar(id obj, const char *name)
     return *(SEL *)((uint8_t *)(__bridge void *)obj + offset);
 }
 
-// 读取 id 类型的 ivar，返回对象
 static id ATGetObjectIvarDirect(id obj, const char *name)
 {
     Ivar ivar = ATFindIvar(object_getClass(obj), name);
@@ -52,117 +51,6 @@ static id ATGetObjectIvarDirect(id obj, const char *name)
         return nil;
     }
     return object_getIvar(obj, ivar);
-}
-
-// ==================== 增强手势分析 ====================
-static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti)
-{
-    // 方法1: 通过 valueForKey 获取 _targets
-    @try
-    {
-        NSArray *tgts = [gr valueForKey:@"_targets"];
-        if (tgts && [tgts isKindOfClass:[NSArray class]] && tgts.count > 0)
-        {
-            for (id t in tgts)
-            {
-                id target = [t valueForKey:@"_target"];
-                id ao = [t valueForKey:@"_action"];
-                NSString *as = nil;
-                if ([ao isKindOfClass:[NSString class]])
-                {
-                    as = ao;
-                }
-                else if ([ao isKindOfClass:[NSValue class]])
-                {
-                    as = NSStringFromSelector((SEL)[ao pointerValue]);
-                }
-                if (target && as)
-                {
-                    [o appendFormat:@"    → %@.%@ (KVC)\n", NSStringFromClass([target class]), as];
-                    recordMethodCall(as);
-                    [ti addObject:@{
-                        @"viewClass": NSStringFromClass([cur class]),
-                        @"gestureClass": NSStringFromClass([gr class]),
-                        @"targetClass": NSStringFromClass([target class]),
-                        @"action": as
-                    }];
-                    return;
-                }
-            }
-        }
-    }
-    @catch (NSException *e)
-    {
-    }
-
-    // 方法2: 通过 Ivar 直接读取 _targets
-    id targets = ATGetObjectIvarDirect(gr, "_targets");
-    if (targets && [targets isKindOfClass:[NSArray class]] && [(NSArray *)targets count] > 0)
-    {
-        for (id t in (NSArray *)targets)
-        {
-            id target = ATGetObjectIvarDirect(t, "_target");
-            SEL action = ATGetSelectorIvar(t, "_action");
-            if (target && action)
-            {
-                NSString *as = NSStringFromSelector(action);
-                [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as];
-                recordMethodCall(as);
-                [ti addObject:@{
-                    @"viewClass": NSStringFromClass([cur class]),
-                    @"gestureClass": NSStringFromClass([gr class]),
-                    @"targetClass": NSStringFromClass([target class]),
-                    @"action": as
-                }];
-                return;
-            }
-        }
-    }
-
-    // 方法3: 尝试直接访问 recognizer 的 delegate
-    if ([gr respondsToSelector:@selector(delegate)] && gr.delegate)
-    {
-        id delegate = gr.delegate;
-        [o appendFormat:@"    delegate: %@\n", NSStringFromClass([delegate class])];
-        // 尝试查找 delegate 上可能的响应方法
-        NSArray *possibleActions = @[@"handleGesture:", @"handleTap:", @"handleSwipe:", @"onTap:", @"onGesture:", @"skipAction", @"closeAction", @"dismissAction", @"adSkipAction"];
-        for (NSString *actionName in possibleActions)
-        {
-            SEL sel = NSSelectorFromString(actionName);
-            if ([delegate respondsToSelector:sel])
-            {
-                [o appendFormat:@"    → %@.%@ (delegate可能)\n", NSStringFromClass([delegate class]), actionName];
-                recordMethodCall(actionName);
-                [ti addObject:@{
-                    @"viewClass": NSStringFromClass([cur class]),
-                    @"gestureClass": NSStringFromClass([gr class]),
-                    @"targetClass": NSStringFromClass([delegate class]),
-                    @"action": actionName
-                }];
-                return;
-            }
-        }
-    }
-
-    // 方法4: 尝试通过 NSInvocation 或其他方式
-    @try
-    {
-        // 尝试获取 _gestureFlags 或 _targets 的其他可能名称
-        NSArray *ivarNames = @[@"_targets", @"_target", @"_action", @"targets", @"targetActions", @"_targetActions"];
-        for (NSString *ivarName in ivarNames)
-        {
-            id val = ATGetObjectIvarDirect(gr, [ivarName UTF8String]);
-            if (val)
-            {
-                [o appendFormat:@"    ivar %@: %@\n", ivarName, val];
-            }
-        }
-    }
-    @catch (NSException *e)
-    {
-    }
-
-    [o appendString:@"    (无法提取)\n"];
 }
 
 // ==================== 获取所有窗口 ====================
@@ -264,6 +152,115 @@ static void recordMethodCall(NSString *name)
     }
 }
 
+// ==================== 增强手势分析（必须在 recordMethodCall 之后） ====================
+static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti)
+{
+    // 方法1: 通过 valueForKey 获取 _targets
+    @try
+    {
+        NSArray *tgts = [gr valueForKey:@"_targets"];
+        if (tgts && [tgts isKindOfClass:[NSArray class]] && tgts.count > 0)
+        {
+            for (id t in tgts)
+            {
+                id target = [t valueForKey:@"_target"];
+                id ao = [t valueForKey:@"_action"];
+                NSString *as = nil;
+                if ([ao isKindOfClass:[NSString class]])
+                {
+                    as = ao;
+                }
+                else if ([ao isKindOfClass:[NSValue class]])
+                {
+                    as = NSStringFromSelector((SEL)[ao pointerValue]);
+                }
+                if (target && as)
+                {
+                    [o appendFormat:@"    → %@.%@ (KVC)\n", NSStringFromClass([target class]), as];
+                    recordMethodCall(as);
+                    [ti addObject:@{
+                        @"viewClass": NSStringFromClass([cur class]),
+                        @"gestureClass": NSStringFromClass([gr class]),
+                        @"targetClass": NSStringFromClass([target class]),
+                        @"action": as
+                    }];
+                    return;
+                }
+            }
+        }
+    }
+    @catch (NSException *e)
+    {
+    }
+
+    // 方法2: 通过 Ivar 直接读取 _targets
+    id targets = ATGetObjectIvarDirect(gr, "_targets");
+    if (targets && [targets isKindOfClass:[NSArray class]] && [(NSArray *)targets count] > 0)
+    {
+        for (id t in (NSArray *)targets)
+        {
+            id target = ATGetObjectIvarDirect(t, "_target");
+            SEL action = ATGetSelectorIvar(t, "_action");
+            if (target && action)
+            {
+                NSString *as = NSStringFromSelector(action);
+                [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as];
+                recordMethodCall(as);
+                [ti addObject:@{
+                    @"viewClass": NSStringFromClass([cur class]),
+                    @"gestureClass": NSStringFromClass([gr class]),
+                    @"targetClass": NSStringFromClass([target class]),
+                    @"action": as
+                }];
+                return;
+            }
+        }
+    }
+
+    // 方法3: 尝试直接访问 recognizer 的 delegate
+    if ([gr respondsToSelector:@selector(delegate)] && gr.delegate)
+    {
+        id delegate = gr.delegate;
+        [o appendFormat:@"    delegate: %@\n", NSStringFromClass([delegate class])];
+        NSArray *possibleActions = @[@"handleGesture:", @"handleTap:", @"handleSwipe:", @"onTap:", @"onGesture:", @"skipAction", @"closeAction", @"dismissAction", @"adSkipAction"];
+        for (NSString *actionName in possibleActions)
+        {
+            SEL sel = NSSelectorFromString(actionName);
+            if ([delegate respondsToSelector:sel])
+            {
+                [o appendFormat:@"    → %@.%@ (delegate可能)\n", NSStringFromClass([delegate class]), actionName];
+                recordMethodCall(actionName);
+                [ti addObject:@{
+                    @"viewClass": NSStringFromClass([cur class]),
+                    @"gestureClass": NSStringFromClass([gr class]),
+                    @"targetClass": NSStringFromClass([delegate class]),
+                    @"action": actionName
+                }];
+                return;
+            }
+        }
+    }
+
+    // 方法4: 尝试获取 _gestureFlags 或 _targets 的其他可能名称
+    @try
+    {
+        NSArray *ivarNames = @[@"_targets", @"_target", @"_action", @"targets", @"targetActions", @"_targetActions"];
+        for (NSString *ivarName in ivarNames)
+        {
+            id val = ATGetObjectIvarDirect(gr, [ivarName UTF8String]);
+            if (val)
+            {
+                [o appendFormat:@"    ivar %@: %@\n", ivarName, val];
+            }
+        }
+    }
+    @catch (NSException *e)
+    {
+    }
+
+    [o appendString:@"    (无法提取)\n"];
+}
+
 // ==================== 前置声明 ====================
 static NSString *getControlEventName(UIControlEvents e);
 static void saveToFile(NSString *log);
@@ -282,7 +279,6 @@ static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
-static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti);
 
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
@@ -415,7 +411,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 
         // 复制按钮
         UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        copyBtn.frame = CGRectMake(self.bounds.size.width - 180, 3, 45, 30);
+        copyBtn.frame = CGRectMake(self.bounds.size.width - 180, 3, 55, 30);
         [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal];
         [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal];
         copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
