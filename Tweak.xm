@@ -1,8 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <dlfcn.h>
-#import <execinfo.h>
 
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 static NSString *const kCustomRulesKey = @"AdInspector_CustomRules";
@@ -190,11 +188,9 @@ static NSArray *stopDeepTracking(void)
 }
 
 // ==================== 前置声明 ====================
-static void saveToFile(NSString *log);
 static void analyzeTouchView(UIView *v, CGPoint pt);
 static void saveRule(NSDictionary *r);
 static void applyAllSavedRules(void);
-static UIView *findMatchingView(UIView *root, NSDictionary *r);
 static void clearAllRules(void);
 static void clearCustomRules(void);
 static void showToast(NSString *msg);
@@ -699,7 +695,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 @end
 
-// ==================== Toast / 工具 ====================
+// ==================== Toast ====================
 static void showToast(NSString *m)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -764,7 +760,6 @@ static void saveRule(NSDictionary *r)
     [ud setObject:nr forKey:kRulesKey];
     [ud synchronize];
 }
-
 
 static void clearAllRules(void)
 {
@@ -833,7 +828,6 @@ static void applyCustomRules(void)
                 {
                     NSString *cn = NSStringFromClass([w class]);
 
-                    // 非标准 window → 直接隐藏
                     if (![cn isEqualToString:@"UIWindow"] &&
                         ![cn hasPrefix:@"_UI"] &&
                         ![cn hasPrefix:@"UIK"])
@@ -847,7 +841,6 @@ static void applyCustomRules(void)
                     }
                     else
                     {
-                        // 标准窗口上的广告视图
                         UIView *adRoot = skipView;
                         while (adRoot.superview && ![adRoot.superview isKindOfClass:[UIWindow class]])
                         {
@@ -865,7 +858,6 @@ static void applyCustomRules(void)
                         }
                         else
                         {
-                            // 向上查找广告容器
                             UIView *adSubtree = skipView;
                             while (adSubtree.superview && ![adSubtree.superview isKindOfClass:[UIWindow class]])
                             {
@@ -891,7 +883,6 @@ static void applyCustomRules(void)
                 }
             }
 
-            // 恢复主窗口
             for (UIWindow *w in getAllWindows())
             {
                 if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"])
