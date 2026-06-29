@@ -139,7 +139,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
         NSInteger tag = check.tag;
-        if (tag >= 1001 && tag <= 1010) return check;
+        if (tag >= 1001 && tag <= 1020) return check;
         check = check.superview;
     }
     return nil;
@@ -150,16 +150,18 @@ static AdInspectorWindow *s_floatWindow = nil;
 }
 @end
 
-// ==================== 悬浮面板 ====================
-@interface AdInspectorPanel : UIView
+// ==================== 悬浮面板（含编辑框） ====================
+@interface AdInspectorPanel : UIView <UITextFieldDelegate>
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
+@property (nonatomic, strong) UITextField *targetViewField;
+@property (nonatomic, strong) UITextField *keyPathField;
+@property (nonatomic, strong) UITextField *methodNameField;
 + (instancetype)shared;
 - (void)showLog:(NSString *)log;
 - (void)forceShow;
 - (void)hidePanel;
-- (void)addDefaultRule;
-- (void)addPauseTimerRule;
+- (void)addCustomRuleFromFields;
 - (void)testCustomRules;
 @end
 
@@ -169,7 +171,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     static AdInspectorPanel *instance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        instance = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 160, [UIScreen mainScreen].bounds.size.width - 10, 300)];
+        instance = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 140, [UIScreen mainScreen].bounds.size.width - 10, 330)];
     });
     return instance;
 }
@@ -177,51 +179,92 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
+        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.90];
         self.layer.cornerRadius = 10; self.layer.borderWidth = 1.5;
         self.layer.borderColor = [UIColor cyanColor].CGColor;
-        self.userInteractionEnabled = YES; self.clipsToBounds = NO; self.hidden = YES;
+        self.userInteractionEnabled = YES; self.clipsToBounds = YES; self.hidden = YES;
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 240, 20)];
-        title.text = @"🔍 AdInspector | 自定义规则"; title.textColor = [UIColor cyanColor];
+        title.text = @"🔍 AdInspector | 编辑规则"; title.textColor = [UIColor cyanColor];
         title.font = [UIFont boldSystemFontOfSize:12]; title.tag = 1001;
         [self addSubview:title];
 
-        UIButton *addRuleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        addRuleBtn.frame = CGRectMake(12, 32, 55, 30);
-        [addRuleBtn setTitle:@"+预设" forState:UIControlStateNormal];
-        [addRuleBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
-        addRuleBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        addRuleBtn.tag = 1008;
-        [addRuleBtn addTarget:self action:@selector(addDefaultRule) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:addRuleBtn];
+        // ---- 输入框区域 ----
+        UILabel *lbl1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)];
+        lbl1.text = @"目标视图类:"; lbl1.textColor = [UIColor whiteColor]; lbl1.font = [UIFont systemFontOfSize:11];
+        [self addSubview:lbl1];
+        self.targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(95, 32, self.bounds.size.width - 110, 26)];
+        self.targetViewField.borderStyle = UITextBorderStyleRoundedRect;
+        self.targetViewField.backgroundColor = [UIColor darkGrayColor];
+        self.targetViewField.textColor = [UIColor whiteColor];
+        self.targetViewField.font = [UIFont systemFontOfSize:12];
+        self.targetViewField.placeholder = @"如 GDTDLRootView";
+        self.targetViewField.tag = 1011;
+        self.targetViewField.delegate = self;
+        [self addSubview:self.targetViewField];
 
-        UIButton *addPauseBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        addPauseBtn.frame = CGRectMake(70, 32, 60, 30);
-        [addPauseBtn setTitle:@"+暂停定时器" forState:UIControlStateNormal];
-        [addPauseBtn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
-        addPauseBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        addPauseBtn.tag = 1010;
-        [addPauseBtn addTarget:self action:@selector(addPauseTimerRule) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:addPauseBtn];
+        UILabel *lbl2 = [[UILabel alloc] initWithFrame:CGRectMake(12, 64, 80, 20)];
+        lbl2.text = @"KVC路径:"; lbl2.textColor = [UIColor whiteColor]; lbl2.font = [UIFont systemFontOfSize:11];
+        [self addSubview:lbl2];
+        self.keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(95, 62, self.bounds.size.width - 110, 26)];
+        self.keyPathField.borderStyle = UITextBorderStyleRoundedRect;
+        self.keyPathField.backgroundColor = [UIColor darkGrayColor];
+        self.keyPathField.textColor = [UIColor whiteColor];
+        self.keyPathField.font = [UIFont systemFontOfSize:12];
+        self.keyPathField.placeholder = @"如 delegate 或 self";
+        self.keyPathField.tag = 1012;
+        self.keyPathField.delegate = self;
+        [self addSubview:self.keyPathField];
 
-        UIButton *editBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        editBtn.frame = CGRectMake(135, 32, 55, 30);
-        [editBtn setTitle:@"✎编辑" forState:UIControlStateNormal];
-        [editBtn setTitleColor:[UIColor orangeColor] forState:UIControlStateNormal];
-        editBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        editBtn.tag = 1010;
-        [editBtn addTarget:self action:@selector(editRulesTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:editBtn];
+        UILabel *lbl3 = [[UILabel alloc] initWithFrame:CGRectMake(12, 94, 80, 20)];
+        lbl3.text = @"方法名:"; lbl3.textColor = [UIColor whiteColor]; lbl3.font = [UIFont systemFontOfSize:11];
+        [self addSubview:lbl3];
+        self.methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(95, 92, self.bounds.size.width - 110, 26)];
+        self.methodNameField.borderStyle = UITextBorderStyleRoundedRect;
+        self.methodNameField.backgroundColor = [UIColor darkGrayColor];
+        self.methodNameField.textColor = [UIColor whiteColor];
+        self.methodNameField.font = [UIFont systemFontOfSize:12];
+        self.methodNameField.placeholder = @"如 onDestroy 或 pauseTimer";
+        self.methodNameField.tag = 1013;
+        self.methodNameField.delegate = self;
+        [self addSubview:self.methodNameField];
+
+        // ---- 按钮区域 ----
+        UIButton *addBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        addBtn.frame = CGRectMake(12, 126, 60, 30);
+        [addBtn setTitle:@"添加" forState:UIControlStateNormal];
+        [addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
+        addBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        addBtn.tag = 1014;
+        [addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:addBtn];
 
         UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        testBtn.frame = CGRectMake(195, 32, 55, 30);
-        [testBtn setTitle:@"▶测试" forState:UIControlStateNormal];
+        testBtn.frame = CGRectMake(80, 126, 60, 30);
+        [testBtn setTitle:@"测试" forState:UIControlStateNormal];
         [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];
-        testBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        testBtn.tag = 1009;
+        testBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        testBtn.tag = 1015;
         [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:testBtn];
+
+        UIButton *preset1Btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        preset1Btn.frame = CGRectMake(148, 126, 60, 30);
+        [preset1Btn setTitle:@"预设1" forState:UIControlStateNormal];
+        [preset1Btn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
+        preset1Btn.titleLabel.font = [UIFont systemFontOfSize:11];
+        preset1Btn.tag = 1016;
+        [preset1Btn addTarget:self action:@selector(fillPreset1) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:preset1Btn];
+
+        UIButton *preset2Btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        preset2Btn.frame = CGRectMake(216, 126, 60, 30);
+        [preset2Btn setTitle:@"预设2" forState:UIControlStateNormal];
+        [preset2Btn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
+        preset2Btn.titleLabel.font = [UIFont systemFontOfSize:11];
+        preset2Btn.tag = 1017;
+        [preset2Btn addTarget:self action:@selector(fillPreset2) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:preset2Btn];
 
         UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         closeBtn.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
@@ -253,7 +296,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
         [self addGestureRecognizer:pan];
 
-        CGFloat tvY = 68;
+        CGFloat tvY = 162;
         self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, tvY, self.bounds.size.width - 10, self.bounds.size.height - tvY - 5)];
         self.logTextView.backgroundColor = [UIColor clearColor]; self.logTextView.textColor = [UIColor greenColor];
         self.logTextView.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
@@ -266,6 +309,11 @@ static AdInspectorWindow *s_floatWindow = nil;
     return self;
 }
 
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
     CGPoint t = [pan translationInView:self];
     self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
@@ -274,40 +322,30 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)hidePanel { self.hidden = YES; }
 
-- (void)addDefaultRule {
-    NSDictionary *rule1 = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"onDestroy",@"description":@"广点通onDestroy"};
-    NSDictionary *rule2 = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"pauseTimer",@"description":@"广点通pauseTimer"};
-    saveCustomRule(rule1);
-    saveCustomRule(rule2);
-    [self showLog:@"\n✅ 已添加规则:\n  GDTDLRootView → delegate → onDestroy\n  GDTDLRootView → delegate → pauseTimer\n"];
-    showToast(@"✅ 规则已添加");
+- (void)fillPreset1 {
+    self.targetViewField.text = @"GDTDLRootView";
+    self.keyPathField.text = @"delegate";
+    self.methodNameField.text = @"onDestroy";
 }
 
-- (void)addPauseTimerRule {
-    NSDictionary *rule = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"pauseTimer",@"description":@"广点通pauseTimer"};
-    saveCustomRule(rule);
-    [self showLog:@"\n✅ 已添加规则: GDTDLRootView → delegate → pauseTimer\n"];
-    showToast(@"✅ pauseTimer规则已添加");
+- (void)fillPreset2 {
+    self.targetViewField.text = @"GDTDLRootView";
+    self.keyPathField.text = @"delegate";
+    self.methodNameField.text = @"pauseTimer";
 }
 
-- (void)editRulesTapped {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *rules = [ud arrayForKey:kCustomRulesKey] ?: @[];
-    if (rules.count == 0) {
-        [self showLog:@"\n⚠️ 没有可编辑的规则，请先添加规则\n"];
+- (void)addCustomRuleFromFields {
+    NSString *tv = self.targetViewField.text;
+    NSString *kp = self.keyPathField.text;
+    NSString *mn = self.methodNameField.text;
+    if (tv.length == 0 || kp.length == 0 || mn.length == 0) {
+        showToast(@"⚠️ 请填写完整规则");
         return;
     }
-    // 显示编辑提示
-    NSMutableString *out = [NSMutableString stringWithFormat:@"\n📝 编辑模式（%lu条规则）:\n", (unsigned long)rules.count];
-    [out appendString:@"  请用Flexing分析后，清空旧规则再重新添加。\n"];
-    [out appendString:@"  当前规则列表：\n"];
-    for (NSInteger i = 0; i < rules.count; i++) {
-        NSDictionary *rule = rules[i];
-        [out appendFormat:@"  %ld: %@ → %@.%@\n", (long)i+1, rule[@"targetView"], rule[@"keyPath"], rule[@"methodName"]];
-    }
-    [out appendString:@"\n  建议：在Flexing中点击GDTDLBusinessManager\n  查看方法列表，找包含skip/close/dismiss的方法\n"];
-    [self showLog:out];
-    showToast(@"📝 请查看日志");
+    NSDictionary *rule = @{@"targetView":tv, @"keyPath":kp, @"methodName":mn, @"description":[NSString stringWithFormat:@"%@→%@", tv, mn]};
+    saveCustomRule(rule);
+    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → %@.%@\n", tv, kp, mn]];
+    showToast(@"✅ 规则已添加");
 }
 
 - (void)testCustomRules {
@@ -339,8 +377,6 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSDictionary *rule = customRules[i];
         [out appendFormat:@"  %ld: %@ → %@.%@\n", (long)i+1, rule[@"targetView"], rule[@"keyPath"], rule[@"methodName"]];
     }
-    [out appendString:@"\n💡 点击\"✎编辑\"查看编辑提示\n"];
-    
     [self showLog:out];
 }
 
@@ -356,14 +392,14 @@ static AdInspectorWindow *s_floatWindow = nil;
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
             s_floatWindow.windowScene = activeScene;
             [s_floatWindow addSubview:self];
-            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
+            self.frame = CGRectMake(5, 140, s_floatWindow.bounds.size.width - 10, 330);
             self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             s_floatWindow.panel = self; s_floatWindow.hidden = NO;
         }
     } else {
         if (!self.superview) {
             [s_floatWindow addSubview:self];
-            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
+            self.frame = CGRectMake(5, 140, s_floatWindow.bounds.size.width - 10, 330);
             self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             s_floatWindow.panel = self;
         }
@@ -470,7 +506,7 @@ static void saveRule(NSDictionary *rule) {
 }
 
 static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
-    if ([root isKindOfClass:[AdInspectorPanel class]] || [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"] || (root.tag >= 1001 && root.tag <= 1010)) return nil;
+    if ([root isKindOfClass:[AdInspectorPanel class]] || [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"] || (root.tag >= 1001 && root.tag <= 1020)) return nil;
     NSString *targetClass = rule[@"buttonClass"]; NSString *textPattern = rule[@"buttonTextPattern"]; NSArray *chain = rule[@"hierarchyChain"];
     if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
         NSString *currentText = nil;
@@ -525,20 +561,11 @@ static void applyCustomRules(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *customRules = [ud arrayForKey:kCustomRulesKey];
     if (!customRules.count) return;
-    
-    // 先执行 pauseTimer，再执行其他
-    NSArray *sortedRules = [customRules sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        if ([a[@"methodName"] containsString:@"pauseTimer"]) return NSOrderedAscending;
-        if ([b[@"methodName"] containsString:@"pauseTimer"]) return NSOrderedDescending;
-        return NSOrderedSame;
-    }];
-    
-    for (NSDictionary *rule in sortedRules) {
+    for (NSDictionary *rule in customRules) {
         NSString *targetViewClass = rule[@"targetView"];
         NSString *keyPath = rule[@"keyPath"];
         NSString *methodName = rule[@"methodName"];
         if (!targetViewClass || !keyPath || !methodName) continue;
-        
         for (UIWindow *window in getAllWindows()) {
             if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
             UIView *targetView = findViewOfClass(window, targetViewClass);
@@ -610,7 +637,7 @@ static BOOL isSkipText(NSString *text) {
 }
 
 static UIView *findSkipLabelInView(UIView *root) {
-    if ([root isKindOfClass:[AdInspectorPanel class]] || (root.tag >= 1001 && root.tag <= 1010)) return nil;
+    if ([root isKindOfClass:[AdInspectorPanel class]] || (root.tag >= 1001 && root.tag <= 1020)) return nil;
     NSString *currentText = nil;
     if ([root isKindOfClass:[UIButton class]]) currentText = [(UIButton *)root titleForState:UIControlStateNormal];
     else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
@@ -623,7 +650,7 @@ static UIView *findSkipLabelInView(UIView *root) {
 // ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
-    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"] || (view.tag >= 1001 && view.tag <= 1010)) return;
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"] || (view.tag >= 1001 && view.tag <= 1020)) return;
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
     s_lastAnalysisTime = now;
@@ -696,12 +723,12 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
             s_floatWindow.windowScene = activeScene;
             AdInspectorPanel *panel = [AdInspectorPanel shared];
-            panel.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
+            panel.frame = CGRectMake(5, 140, s_floatWindow.bounds.size.width - 10, 330);
             panel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             [s_floatWindow addSubview:panel];
             s_floatWindow.panel = panel; s_floatWindow.hidden = NO;
         }
-        showToast(@"🔍 已激活 | 双指呼面板 | 自定义规则");
+        showToast(@"🔍 已激活 | 双指呼面板 | 可编辑规则");
         if (isFlexingAvailable()) raiseFlexingWindow();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
