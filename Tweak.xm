@@ -1,4 +1,29 @@
-// ==================== 在文件顶部添加全局变量 ====================
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <dlfcn.h>
+#import <execinfo.h>
+#import <Foundation/Foundation.h>
+
+// ==================== 前置声明 ====================
+@class AdInspectorPanel;
+
+// ==================== 常量定义 ====================
+static NSString *const kRulesKey = @"AdInspector_SkipRules";
+static NSString *const kCustomRulesKey = @"AdInspector_CustomRules";
+static NSString *const kCapturedParamKey = @"AdInspector_CapturedSkipParam";
+static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
+
+// ==================== 全局变量 ====================
+static NSMutableArray *s_trackedMethods = nil;
+static BOOL s_isTracking = NO;
+static NSDate *s_trackStartTime = nil;
+static BOOL s_isDeepTracking = NO;
+static NSDate *s_deepTrackStartTime = nil;
+static NSMutableArray *s_deepTrackedMethods = nil;
+static BOOL s_isKeyboardVisible = NO;
+
+// 新增：参数捕获相关全局变量
 static NSInteger s_capturedSkipParam = NSIntegerMin;
 static BOOL s_isCapturingParams = NO;
 static BOOL s_autoApplyRulesEnabled = NO;
@@ -6,10 +31,45 @@ static NSTimer *s_autoApplyTimer = nil;
 static NSTimeInterval s_autoApplyInterval = 0.5;
 static NSDate *s_lastAutoApplyTime = nil;
 static NSTimeInterval s_autoApplyCooldown = 3.0;
-static NSString *const kCapturedParamKey = @"AdInspector_CapturedSkipParam";
-static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
 
-// ==================== Hook GDTDLRootView ====================
+// ==================== 前向声明所有函数 ====================
+static NSString *getCallStackSymbols(void);
+static Ivar ATFindIvar(Class cls, const char *name);
+static SEL ATGetSelectorIvar(id obj, const char *name);
+static id ATGetObjectIvarDirect(id obj, const char *name);
+static NSArray<UIWindow *> *getAllWindows(void);
+static BOOL isFlexingAvailable(void);
+static void raiseFlexingWindow(void);
+static void startTracking(void);
+static void stopTracking(void);
+static void hookAllMethodsOfClass(Class cls);
+static void startDeepTracking(void);
+static NSArray *stopDeepTracking(void);
+static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti);
+static NSString *getControlEventName(UIControlEvents e);
+static void saveToFile(NSString *log);
+static void analyzeTouchView(UIView *v, CGPoint pt);
+static void highlightView(UIView *v);
+static void saveRule(NSDictionary *r);
+static void applyAllSavedRules(void);
+static UIView *findMatchingView(UIView *root, NSDictionary *r);
+static void triggerSkip(UIView *v, NSDictionary *r);
+static void clearAllRules(void);
+static void clearCustomRules(void);
+static void showToast(NSString *msg);
+static UIWindow *getKeyWindow(void);
+static UIView *findSkipLabelInView(UIView *root);
+static void saveCustomRule(NSDictionary *r);
+static void applyCustomRules(void);
+static UIView *findViewOfClass(UIView *root, NSString *cn);
+static id getObjectByKeyPath(id obj, NSString *kp);
+
+// ==================== 实现所有函数（保持原有实现不变）====================
+// ... 这里保持你原有的所有函数实现 ...
+
+// ==================== Hook 部分 ====================
+
+// Hook GDTDLRootView 来捕获参数
 %hook GDTDLRootView
 
 - (void)GDTfunctionm80Ge8:(id)arg1 beganWithTouches:(id)arg2 andEvent:(id)arg3 {
@@ -36,6 +96,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     [log appendFormat:@"参数类型: NSInteger\n"];
     [log appendFormat:@"时间: %@\n", [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
     
+    // 保存捕获的参数
     s_capturedSkipParam = arg1;
     [[NSUserDefaults standardUserDefaults] setInteger:arg1 forKey:kCapturedParamKey];
     [[NSUserDefaults standardUserDefaults] setObject:@"GDTfunctionu0H2Y8:" forKey:kCapturedMethodKey];
@@ -43,6 +104,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     
     [log appendString:@"\n✅ 参数已保存，可用于自动跳过\n"];
     
+    // 获取调用栈
     NSString *callStack = getCallStackSymbols();
     [log appendFormat:@"\n📚 调用栈:\n%@\n", callStack];
     
@@ -51,6 +113,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     
     s_isCapturingParams = NO;
     
+    // 调用原方法
     %orig;
 }
 
@@ -70,7 +133,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
 
 %end
 
-// ==================== Hook GDTDLBusinessManager ====================
+// Hook GDTDLBusinessManager
 %hook GDTDLBusinessManager
 
 - (void)onDestroy {
@@ -101,19 +164,35 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
 
 %end
 
-// ==================== AdInspectorPanel 分类扩展 ====================
-@interface AdInspectorPanel (AutoSkip)
-- (void)showCapturedParams;
-- (void)testCapturedParam;
-- (void)clearCapturedParams;
-- (void)performAutoSkipWithCapturedParam;
-- (void)autoApplyRulesIfNeeded;
-- (void)toggleAutoApply:(UIButton *)sender;
-- (void)performCompleteSkipFlow;
-@end
+// 保持原有的其他 Hook
+%hook UIGestureRecognizer
+- (void)setState:(UIGestureRecognizerState)state
+{
+    %orig;
+    // ... 保持原有实现 ...
+}
+%end
 
-@implementation AdInspectorPanel (AutoSkip)
+%hook UIApplication
+- (void)sendEvent:(UIEvent *)e
+{
+    %orig;
+    // ... 保持原有实现 ...
+}
+%end
 
+%hook UIControl
+- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e
+{
+    NSLog(@"[AdInspector] 🔗 %@ → %@.%@ [%@]", NSStringFromClass([self class]), NSStringFromClass([t class]), NSStringFromSelector(a), getControlEventName(e));
+    %orig;
+}
+%end
+
+// ==================== AdInspectorPanel 分类实现 ====================
+%hook AdInspectorPanel
+
+%new
 - (void)showCapturedParams {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
@@ -140,6 +219,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     [self showLog:log];
 }
 
+%new
 - (void)testCapturedParam {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
@@ -190,6 +270,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     }
 }
 
+%new
 - (void)clearCapturedParams {
     s_capturedSkipParam = NSIntegerMin;
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCapturedParamKey];
@@ -199,6 +280,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     showToast(@"🗑️ 参数已清除");
 }
 
+%new
 - (void)performAutoSkipWithCapturedParam {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
@@ -238,6 +320,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     }
 }
 
+%new
 - (void)autoApplyRulesIfNeeded {
     if (s_lastAutoApplyTime && 
         [[NSDate date] timeIntervalSinceDate:s_lastAutoApplyTime] < s_autoApplyCooldown) {
@@ -252,6 +335,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     }
 }
 
+%new
 - (void)toggleAutoApply:(UIButton *)sender {
     s_autoApplyRulesEnabled = !s_autoApplyRulesEnabled;
     
@@ -262,12 +346,11 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         [sender setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
         
         if (!s_autoApplyTimer) {
-            __weak typeof(self) weakSelf = self;
+            __weak AdInspectorPanel *weakSelf = self;
             s_autoApplyTimer = [NSTimer scheduledTimerWithTimeInterval:s_autoApplyInterval 
                                                                 repeats:YES 
                                                                   block:^(NSTimer *timer) {
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                [strongSelf autoApplyRulesIfNeeded];
+                [weakSelf autoApplyRulesIfNeeded];
             }];
         }
         
@@ -289,6 +372,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     }
 }
 
+%new
 - (void)performCompleteSkipFlow {
     UIView *rootView = nil;
     
@@ -316,15 +400,15 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     NSInteger skipParam = [[NSUserDefaults standardUserDefaults] integerForKey:kCapturedParamKey];
     if (skipParam == NSIntegerMin) skipParam = 1;
     
-    if ([rootView respondsToSelector:@selector(GDTfunctionu0H2Y8:)]) {
+    if ([rootView respondsToSelector:NSSelectorFromString(@"GDTfunctionu0H2Y8:")]) {
         [log appendFormat:@"1️⃣ 调用 GDTfunctionu0H2Y8:%ld\n", (long)skipParam];
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, @selector(GDTfunctionu0H2Y8:), skipParam);
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctionu0H2Y8:"), skipParam);
     }
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([rootView respondsToSelector:@selector(GDTfunctione5qsNB:)]) {
+        if ([rootView respondsToSelector:NSSelectorFromString(@"GDTfunctione5qsNB:")]) {
             [log appendString:@"2️⃣ 调用 GDTfunctione5qsNB:\n"];
-            ((void (*)(id, SEL, id))objc_msgSend)(rootView, @selector(GDTfunctione5qsNB:), nil);
+            ((void (*)(id, SEL, id))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctione5qsNB:"), nil);
         }
     });
     
@@ -332,9 +416,9 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         id responder = rootView;
         while (responder) {
             if ([responder isKindOfClass:NSClassFromString(@"GDTDLBusinessManager")]) {
-                if ([responder respondsToSelector:@selector(onDestroy)]) {
+                if ([responder respondsToSelector:NSSelectorFromString(@"onDestroy")]) {
                     [log appendString:@"3️⃣ 调用 onDestroy\n"];
-                    ((void (*)(id, SEL))objc_msgSend)(responder, @selector(onDestroy));
+                    ((void (*)(id, SEL))objc_msgSend)(responder, NSSelectorFromString(@"onDestroy"));
                     break;
                 }
             }
@@ -347,14 +431,14 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     showToast(@"✅ 跳过流程已执行");
 }
 
-@end
+%end
 
-// ==================== 修改 AdInspectorPanel 的初始化 ====================
+// ==================== 修改 AdInspectorPanel 的初始化（添加新按钮）====================
 %hook AdInspectorPanel
 - (instancetype)initWithFrame:(CGRect)frame {
     self = %orig;
     if (self) {
-        // 添加参数捕获相关按钮
+        // 查看参数按钮
         UIButton *showParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         showParamBtn.frame = CGRectMake(12, 194, 60, 30);
         [showParamBtn setTitle:@"📊参数" forState:UIControlStateNormal];
@@ -364,6 +448,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         [showParamBtn addTarget:self action:@selector(showCapturedParams) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:showParamBtn];
         
+        // 测试参数按钮
         UIButton *testParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         testParamBtn.frame = CGRectMake(80, 194, 60, 30);
         [testParamBtn setTitle:@"🧪测试" forState:UIControlStateNormal];
@@ -373,6 +458,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         [testParamBtn addTarget:self action:@selector(testCapturedParam) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:testParamBtn];
         
+        // 清除参数按钮
         UIButton *clearParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         clearParamBtn.frame = CGRectMake(148, 194, 60, 30);
         [clearParamBtn setTitle:@"🗑️清除" forState:UIControlStateNormal];
@@ -382,6 +468,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         [clearParamBtn addTarget:self action:@selector(clearCapturedParams) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:clearParamBtn];
         
+        // 强制跳过按钮
         UIButton *forceSkipBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         forceSkipBtn.frame = CGRectMake(12, 228, 100, 30);
         [forceSkipBtn setTitle:@"💪强制跳过" forState:UIControlStateNormal];
@@ -391,7 +478,7 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
         [forceSkipBtn addTarget:self action:@selector(performCompleteSkipFlow) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:forceSkipBtn];
         
-        // 修改自动跳过按钮
+        // 自动跳过按钮
         UIButton *autoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         autoBtn.frame = CGRectMake(120, 228, 100, 30);
         [autoBtn setTitle:@"🤖自动跳过" forState:UIControlStateNormal];
@@ -404,3 +491,52 @@ static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
     return self;
 }
 %end
+
+// ==================== 初始化 ====================
+%ctor
+{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // ... 保持原有的初始化代码 ...
+        
+        // 你的原有代码
+        UIWindowScene *as = nil;
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes)
+        {
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive)
+            {
+                as = (UIWindowScene *)s;
+                break;
+            }
+        }
+        if (as)
+        {
+            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
+            s_floatWindow.windowScene = as;
+            AdInspectorPanel *p = [AdInspectorPanel shared];
+            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360);
+            p.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            [s_floatWindow addSubview:p];
+            s_floatWindow.panel = p;
+            s_floatWindow.hidden = NO;
+        }
+
+        hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
+
+        showToast(@"🔍 已激活 | 双指呼面板 | 参数捕获");
+        if (isFlexingAvailable())
+        {
+            raiseFlexingWindow();
+        }
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            applyAllSavedRules();
+            if (s_floatWindow && !s_isKeyboardVisible)
+            {
+                s_floatWindow.hidden = NO;
+            }
+            if (isFlexingAvailable())
+            {
+                raiseFlexingWindow();
+            }
+        }];
+    });
+}
