@@ -5,8 +5,40 @@
 #import <execinfo.h>
 #import <Foundation/Foundation.h>
 
-// ==================== 前置声明 ====================
+// ==================== 前向声明 ====================
 @class AdInspectorPanel;
+@class AdInspectorWindow;
+
+// ==================== AdInspectorPanel 接口定义（必须在 Hook 之前）====================
+@interface AdInspectorPanel : UIView <UITextFieldDelegate>
+@property (nonatomic, strong) UITextView *logTextView;
+@property (nonatomic, strong) NSMutableString *logBuffer;
+@property (nonatomic, strong) UITextField *targetViewField;
+@property (nonatomic, strong) UITextField *keyPathField;
+@property (nonatomic, strong) UITextField *methodNameField;
++ (instancetype)shared;
+- (void)showLog:(NSString *)log;
+- (void)forceShow;
+- (void)hidePanel;
+- (void)addCustomRuleFromFields;
+- (void)testCustomRules;
+- (void)copyLog;
+- (void)toggleDeepTracking:(UIButton *)sender;
+
+// 新增方法声明
+- (void)showCapturedParams;
+- (void)testCapturedParam;
+- (void)clearCapturedParams;
+- (void)performAutoSkipWithCapturedParam;
+- (void)autoApplyRulesIfNeeded;
+- (void)toggleAutoApply:(UIButton *)sender;
+- (void)performCompleteSkipFlow;
+@end
+
+// ==================== AdInspectorWindow 接口定义 ====================
+@interface AdInspectorWindow : UIWindow
+@property (nonatomic, weak) AdInspectorPanel *panel;
+@end
 
 // ==================== 常量定义 ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
@@ -22,8 +54,9 @@ static BOOL s_isDeepTracking = NO;
 static NSDate *s_deepTrackStartTime = nil;
 static NSMutableArray *s_deepTrackedMethods = nil;
 static BOOL s_isKeyboardVisible = NO;
+static AdInspectorWindow *s_floatWindow = nil;
 
-// 新增：参数捕获相关全局变量
+// 参数捕获相关
 static NSInteger s_capturedSkipParam = NSIntegerMin;
 static BOOL s_isCapturingParams = NO;
 static BOOL s_autoApplyRulesEnabled = NO;
@@ -31,6 +64,13 @@ static NSTimer *s_autoApplyTimer = nil;
 static NSTimeInterval s_autoApplyInterval = 0.5;
 static NSDate *s_lastAutoApplyTime = nil;
 static NSTimeInterval s_autoApplyCooldown = 3.0;
+
+// 其他全局变量
+static NSDate *s_lastAnalysisTime = nil;
+static const NSTimeInterval kMinAnalysisInterval = 0.3;
+static NSDate *s_twoFingerStart = nil;
+static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
+static NSDate *s_ignoreSingleTouchUntil = nil;
 
 // ==================== 前向声明所有函数 ====================
 static NSString *getCallStackSymbols(void);
@@ -64,8 +104,8 @@ static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
 
-// ==================== 实现所有函数（保持原有实现不变）====================
-// ... 这里保持你原有的所有函数实现 ...
+// ==================== 工具函数实现 ====================
+// ... 保持你原有的所有函数实现 ...
 
 // ==================== Hook 部分 ====================
 
@@ -104,7 +144,6 @@ static id getObjectByKeyPath(id obj, NSString *kp);
     
     [log appendString:@"\n✅ 参数已保存，可用于自动跳过\n"];
     
-    // 获取调用栈
     NSString *callStack = getCallStackSymbols();
     [log appendFormat:@"\n📚 调用栈:\n%@\n", callStack];
     
@@ -112,8 +151,6 @@ static id getObjectByKeyPath(id obj, NSString *kp);
     saveToFile(log);
     
     s_isCapturingParams = NO;
-    
-    // 调用原方法
     %orig;
 }
 
@@ -139,9 +176,8 @@ static id getObjectByKeyPath(id obj, NSString *kp);
 - (void)onDestroy {
     if (s_isCapturingParams) {
         [[AdInspectorPanel shared] showLog:@"💀 广告被销毁: onDestroy"];
-        
         if (s_capturedSkipParam == NSIntegerMin) {
-            [[AdInspectorPanel shared] showLog:@"⚠️ 未捕获到 GDTfunctionu0H2Y8: 参数，尝试其他方法..."];
+            [[AdInspectorPanel shared] showLog:@"⚠️ 未捕获到 GDTfunctionu0H2Y8: 参数"];
         }
     }
     %orig;
@@ -164,23 +200,118 @@ static id getObjectByKeyPath(id obj, NSString *kp);
 
 %end
 
-// 保持原有的其他 Hook
+// 保持原有的 UIGestureRecognizer Hook
 %hook UIGestureRecognizer
 - (void)setState:(UIGestureRecognizerState)state
 {
     %orig;
-    // ... 保持原有实现 ...
+    if (state == UIGestureRecognizerStateEnded)
+    {
+        UIView *view = self.view;
+        if (!view) return;
+        
+        UIView *skipView = findSkipLabelInView(view);
+        if (!skipView)
+        {
+            UIView *parent = view.superview;
+            while (parent && ![parent isKindOfClass:[UIWindow class]])
+            {
+                skipView = findSkipLabelInView(parent);
+                if (skipView) break;
+                parent = parent.superview;
+            }
+        }
+        if (skipView)
+        {
+            NSString *callStack = getCallStackSymbols();
+            NSMutableString *log = [NSMutableString string];
+            [log appendFormat:@"\n🔔 手势触发! 手势:%@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
+            [log appendFormat:@"📚 调用栈:\n%@\n", callStack];
+            
+            @try {
+                id targets = [self valueForKey:@"_targets"];
+                if (targets && [targets isKindOfClass:[NSArray class]])
+                {
+                    for (id t in (NSArray *)targets)
+                    {
+                        id target = [t valueForKey:@"_target"];
+                        id action = [t valueForKey:@"_action"];
+                        [log appendFormat:@"🎯 target: %@ → %@\n", NSStringFromClass([target class]), action];
+                    }
+                }
+            } @catch (NSException *e) {
+                [log appendString:@"(无法读取 _targets)\n"];
+            }
+            
+            @try {
+                id delegate = self.delegate;
+                if (delegate) {
+                    [log appendFormat:@"🎯 delegate: %@\n", NSStringFromClass([delegate class])];
+                }
+            } @catch (NSException *e) {}
+            
+            [log appendString:@"══════\n"];
+            [[AdInspectorPanel shared] showLog:log];
+            saveToFile(log);
+        }
+    }
 }
 %end
 
+// Hook UIApplication
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e
 {
     %orig;
-    // ... 保持原有实现 ...
+    if (e.type == UIEventTypeTouches)
+    {
+        NSSet *ts = [e allTouches];
+        if (ts.count >= 2)
+        {
+            BOOL as = YES;
+            for (UITouch *t in ts)
+            {
+                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled)
+                {
+                    as = NO;
+                    break;
+                }
+            }
+            if (as && !s_twoFingerStart)
+            {
+                s_twoFingerStart = [NSDate date];
+            }
+            if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration)
+            {
+                AdInspectorPanel *p = [AdInspectorPanel shared];
+                if (p.hidden)
+                {
+                    [p forceShow];
+                }
+                s_twoFingerStart = nil;
+                s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
+            }
+        }
+        else
+        {
+            s_twoFingerStart = nil;
+        }
+        if (ts.count == 1)
+        {
+            UITouch *t = [ts anyObject];
+            if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart)
+            {
+                if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending)
+                {
+                    analyzeTouchView(t.view, [t locationInView:nil]);
+                }
+            }
+        }
+    }
 }
 %end
 
+// Hook UIControl
 %hook UIControl
 - (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e
 {
@@ -189,7 +320,7 @@ static id getObjectByKeyPath(id obj, NSString *kp);
 }
 %end
 
-// ==================== AdInspectorPanel 分类实现 ====================
+// ==================== 给 AdInspectorPanel 添加新方法 ====================
 %hook AdInspectorPanel
 
 %new
@@ -206,7 +337,7 @@ static id getObjectByKeyPath(id obj, NSString *kp);
     } else {
         [log appendString:[NSString stringWithFormat:@"  方法: %@\n", savedMethod]];
         [log appendString:[NSString stringWithFormat:@"  参数值: %ld\n", (long)savedParam]];
-        [log appendString:[NSString stringWithFormat:@"  状态: ✅ 可用于自动跳过\n"]];
+        [log appendString:@"  状态: ✅ 可用于自动跳过\n"];
     }
     
     if (s_isCapturingParams) {
@@ -313,7 +444,7 @@ static id getObjectByKeyPath(id obj, NSString *kp);
     if (rootView && hasSkipButton) {
         SEL selector = NSSelectorFromString(@"GDTfunctionu0H2Y8:");
         if ([rootView respondsToSelector:selector]) {
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"🤖 自动跳过: 使用参数 %ld", (long)savedParam]];
+            [self showLog:[NSString stringWithFormat:@"🤖 自动跳过: 使用参数 %ld", (long)savedParam]];
             ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, selector, savedParam);
             s_lastAutoApplyTime = [NSDate date];
         }
@@ -346,11 +477,12 @@ static id getObjectByKeyPath(id obj, NSString *kp);
         [sender setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
         
         if (!s_autoApplyTimer) {
-            __weak AdInspectorPanel *weakSelf = self;
+            __weak typeof(self) weakSelf = self;
             s_autoApplyTimer = [NSTimer scheduledTimerWithTimeInterval:s_autoApplyInterval 
                                                                 repeats:YES 
                                                                   block:^(NSTimer *timer) {
-                [weakSelf autoApplyRulesIfNeeded];
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                [strongSelf autoApplyRulesIfNeeded];
             }];
         }
         
@@ -433,11 +565,16 @@ static id getObjectByKeyPath(id obj, NSString *kp);
 
 %end
 
-// ==================== 修改 AdInspectorPanel 的初始化（添加新按钮）====================
+// ==================== 修改 AdInspectorPanel 初始化添加按钮 ====================
 %hook AdInspectorPanel
 - (instancetype)initWithFrame:(CGRect)frame {
     self = %orig;
     if (self) {
+        // 调整高度以容纳新按钮
+        CGRect newFrame = self.frame;
+        newFrame.size.height = 400;
+        self.frame = newFrame;
+        
         // 查看参数按钮
         UIButton *showParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         showParamBtn.frame = CGRectMake(12, 194, 60, 30);
@@ -487,6 +624,17 @@ static id getObjectByKeyPath(id obj, NSString *kp);
         autoBtn.tag = 1025;
         [autoBtn addTarget:self action:@selector(toggleAutoApply:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:autoBtn];
+        
+        // 调整日志视图高度
+        for (UIView *subview in self.subviews) {
+            if ([subview isKindOfClass:[UITextView class]] && subview.tag == 1005) {
+                CGRect tvFrame = subview.frame;
+                tvFrame.origin.y = 266;
+                tvFrame.size.height = self.bounds.size.height - 266 - 5;
+                subview.frame = tvFrame;
+                break;
+            }
+        }
     }
     return self;
 }
@@ -496,9 +644,6 @@ static id getObjectByKeyPath(id obj, NSString *kp);
 %ctor
 {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // ... 保持原有的初始化代码 ...
-        
-        // 你的原有代码
         UIWindowScene *as = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes)
         {
@@ -513,7 +658,7 @@ static id getObjectByKeyPath(id obj, NSString *kp);
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
             s_floatWindow.windowScene = as;
             AdInspectorPanel *p = [AdInspectorPanel shared];
-            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360);
+            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 400); // 增加高度
             p.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             [s_floatWindow addSubview:p];
             s_floatWindow.panel = p;
