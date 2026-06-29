@@ -19,7 +19,6 @@ static BOOL s_isDeepTracking = NO;
 static NSDate *s_deepTrackStartTime = nil;
 static NSMutableArray *s_deepTrackedMethods = nil;
 static BOOL s_isKeyboardVisible = NO;
-static AdInspectorWindow *s_floatWindow = nil;
 // 参数捕获相关
 static NSInteger s_capturedSkipParam = NSIntegerMin;
 static BOOL s_isCapturingParams = NO;
@@ -68,7 +67,7 @@ static NSDate *s_ignoreSingleTouchUntil = nil;
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, weak) AdInspectorPanel *panel;
 @end
-
+static AdInspectorWindow *s_floatWindow = nil;
 // ==================== 函数前向声明 ====================
 static NSString *getCallStackSymbols(void);
 static Ivar ATFindIvar(Class cls, const char *name);
@@ -1519,7 +1518,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
             rootView = nil;
         }
     }
-    if (!rootView) { [self showLog:@"⚠️ 未检测到广告"]; showToast:@"⚠️ 未检测到广告"; return; }
+    if (!rootView) { [self showLog:@"⚠️ 未检测到广告"]; showToast(@"⚠️ 未检测到广告"); return; }
     
     NSInteger skipParam = [[NSUserDefaults standardUserDefaults] integerForKey:kCapturedParamKey];
     if (skipParam == NSIntegerMin) skipParam = 1;
