@@ -19,7 +19,7 @@ static BOOL s_isDeepTracking = NO;
 static NSDate *s_deepTrackStartTime = nil;
 static NSMutableArray *s_deepTrackedMethods = nil;
 static BOOL s_isKeyboardVisible = NO;
-
+static AdInspectorWindow *s_floatWindow = nil;
 // 参数捕获相关
 static NSInteger s_capturedSkipParam = NSIntegerMin;
 static BOOL s_isCapturingParams = NO;
@@ -1504,7 +1504,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
         [s_autoApplyTimer invalidate];
         s_autoApplyTimer = nil;
         [self showLog:@"⏸️ 自动跳过已停止"];
-        showToast:@"⏸️ 自动跳过已停止"];
+        showToast(@"⏸️ 自动跳过已停止");
     }
 }
 
@@ -1528,7 +1528,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctionu0H2Y8:"), skipParam);
     }
     [self showLog:@"✅ 强制跳过已执行"];
-    showToast:@"✅ 强制跳过"];
+    showToast(@"✅ 强制跳过");
 }
 
 @end
