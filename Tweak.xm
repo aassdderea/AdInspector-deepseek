@@ -246,12 +246,26 @@ static void applyCustomRules(void) {
         NSRange crange=[cleanMethod rangeOfString:@","];
         if(crange.location!=NSNotFound){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=[cleanMethod substringFromIndex:crange.location+1];}
         
-        // 查找对象
+               // 查找对象
         BOOL found=NO; id tg=nil;
         for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; UIView *tv=findViewOfClass(w,tvc); if(tv){tg=getObjectByKeyPath(tv,kp);if(tg){found=YES;break;}}}
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
         if([kp isEqualToString:@"self"]&&!tg){Class tc=NSClassFromString(tvc);if(tc){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}else if(tg){tg=getObjectByKeyPath(tg,kp);}
-        if(!tg){Class tc=NSClassFromString(tvc); if(tc){for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; id resp=w; while(resp){if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg){found=YES;break;}}resp=[resp nextResponder];} if(tg)break;}}}
+        if(!tg){Class tc=NSClassFromString(tvc); if(tc){
+            for(UIWindow *w in getAllWindows()){
+                if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue;
+                id resp=w;
+                while(resp){
+                    if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}
+                    resp=[resp nextResponder];
+                }
+                if(tg)break;
+            }
+            if(!tg){
+                SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)};
+                for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);}
+            }
+        }}
         if(!tg){NSString *msg=[NSString stringWithFormat:@"❌ 未找到 %@",tvc]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         
         SEL m=NSSelectorFromString(actualMethod);
