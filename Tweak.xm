@@ -478,6 +478,18 @@ static void applyCustomRules(void)
                 ((void(*)(id,SEL,double))objc_msgSend)(tg, m, val);
                 logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%.1f 类型:double 已执行", NSStringFromClass([tg class]), actualMethod, val];
                 showToast([NSString stringWithFormat:@"✅ %@(%.1f)", actualMethod, val]);
+            } else if (strcmp(type,"B")==0) {
+                // 如果参数是 BOOL 类型但之前没匹配到，在这里处理
+                BOOL val = [paramStr boolValue];
+                ((void(*)(id,SEL,BOOL))objc_msgSend)(tg, m, val);
+                logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%d 类型:BOOL 已执行", NSStringFromClass([tg class]), actualMethod, val];
+                showToast([NSString stringWithFormat:@"✅ %@(%d)", actualMethod, val]);
+            } else if (strcmp(type,"q")==0 || strcmp(type,"i")==0 || strcmp(type,"Q")==0) {
+                // 整数类型
+                NSInteger val = [paramStr integerValue];
+                ((void(*)(id,SEL,NSInteger))objc_msgSend)(tg, m, val);
+                logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%ld 类型:NSInteger 已执行", NSStringFromClass([tg class]), actualMethod, (long)val];
+                showToast([NSString stringWithFormat:@"✅ %@(%ld)", actualMethod, (long)val]);
             } else {
                 ((void(*)(id,SEL,id))objc_msgSend)(tg, m, paramStr);
                 logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:\"%@\" 类型:NSString 已执行", NSStringFromClass([tg class]), actualMethod, paramStr];
