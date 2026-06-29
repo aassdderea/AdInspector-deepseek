@@ -213,7 +213,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     {
         return nil;
     }
-    while (hit && hit != self.panel)
+    while (hit && (id)hit != (id)self.panel)
     {
         if (hit.tag >= 1001 && hit.tag <= 1020)
         {
