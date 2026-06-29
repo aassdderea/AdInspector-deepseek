@@ -735,33 +735,6 @@ static void showToast(NSString *m)
     });
 }
 
-static void saveToFile(NSString *log)
-{
-    @try
-    {
-        NSArray *p = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-        if (p.count == 0)
-        {
-            return;
-        }
-        NSString *pt = [p[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:pt])
-        {
-            [[NSData data] writeToFile:pt atomically:YES];
-        }
-        NSFileHandle *f = [NSFileHandle fileHandleForWritingAtPath:pt];
-        if (f)
-        {
-            [f seekToEndOfFile];
-            [f writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];
-            [f closeFile];
-        }
-    }
-    @catch (NSException *e)
-    {
-    }
-}
-
 // ==================== 规则管理 ====================
 static void saveRule(NSDictionary *r)
 {
@@ -792,10 +765,6 @@ static void saveRule(NSDictionary *r)
     [ud synchronize];
 }
 
-static UIView *findMatchingView(UIView *rt, NSDictionary *r)
-{
-    return nil;
-}
 
 static void clearAllRules(void)
 {
