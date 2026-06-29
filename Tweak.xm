@@ -4,6 +4,8 @@
 #import <dlfcn.h>
 #import <execinfo.h>
 #import <Foundation/Foundation.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-function"
 
 // ==================== 常量定义 ====================
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
@@ -1698,3 +1700,4 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
         }];
     });
 }
+#pragma clang diagnostic pop
