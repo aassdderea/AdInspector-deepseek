@@ -306,9 +306,16 @@ static void showToast(NSString *m)
 static void saveCustomRule(NSDictionary *r)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[];
-    for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; }
-    NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize];
+    NSArray *ex = [ud arrayForKey:kCustomRulesKey];
+    if (!ex) ex = @[];
+    for (NSDictionary *x in ex)
+    {
+        if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return;
+    }
+    NSMutableArray *nr = [ex mutableCopy];
+    [nr addObject:r];
+    [ud setObject:nr forKey:kCustomRulesKey];
+    [ud synchronize];
 }
 static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
 static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; }
@@ -320,7 +327,7 @@ static void applyCustomRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *cr = [ud arrayForKey:kCustomRulesKey];
-    if (!cr.count) return;
+    if (!cr || !cr.count) return;
 
     BOOL didExecute = NO;
 
@@ -390,7 +397,9 @@ static void applyCustomRules(void)
 
 static void applyAllSavedRules(void)
 {
-    if (([[[NSUserDefaults standardUserDefaults] arrayForKey:kCustomRulesKey] ?: @[]).count > 0) applyCustomRules();
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *cr = [ud arrayForKey:kCustomRulesKey];
+    if (cr && cr.count > 0) applyCustomRules();
 }
 
 // ==================== Hook ====================
