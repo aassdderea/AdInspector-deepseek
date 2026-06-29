@@ -54,10 +54,7 @@ static BOOL isFlexingAvailable(void)
 
 static void raiseFlexingWindow(void)
 {
-    if (s_isKeyboardVisible)
-    {
-        return;
-    }
+    if (s_isKeyboardVisible) return;
     for (UIWindow *w in getAllWindows())
     {
         NSString *cn = NSStringFromClass([w class]);
@@ -90,10 +87,7 @@ static void stopTracking(void)
 
 static void hookAllMethodsOfClass(Class cls)
 {
-    if (!cls)
-    {
-        return;
-    }
+    if (!cls) return;
     NSString *className = NSStringFromClass(cls);
     unsigned int methodCount = 0;
     Method *methods = class_copyMethodList(cls, &methodCount);
@@ -125,10 +119,7 @@ static void hookAllMethodsOfClass(Class cls)
                 {
                     ((void (*)(id, SEL))originalIMP)(self, sel);
                 }
-                if (!s_isTracking && !s_isDeepTracking)
-                {
-                    return;
-                }
+                if (!s_isTracking && !s_isDeepTracking) return;
                 if (s_isTracking)
                 {
                     @synchronized(s_trackedMethods)
@@ -177,13 +168,13 @@ static NSArray *stopDeepTracking(void)
 }
 
 // ==================== 前置声明 ====================
-static void applyAllSavedRules(void);
-static void clearAllRules(void);
-static void clearCustomRules(void);
 static void showToast(NSString *msg);
 static UIWindow *getKeyWindow(void);
 static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
+static void applyAllSavedRules(void);
+static void clearAllRules(void);
+static void clearCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
 
@@ -193,18 +184,15 @@ static NSDate *s_ignoreSingleTouchUntil = nil;
 
 static UIWindow *getKeyWindow(void)
 {
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes)
+    for (UIWindow *w in getAllWindows())
     {
-        if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive)
-        {
-            for (UIWindow *w in [(UIWindowScene *)s windows])
-            {
-                if (w.isKeyWindow)
-                {
-                    return w;
-                }
-            }
-        }
+        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+        if (w.isKeyWindow) return w;
+    }
+    for (UIWindow *w in getAllWindows())
+    {
+        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+        if (!w.hidden && w.alpha > 0) return w;
     }
     return nil;
 }
@@ -298,14 +286,14 @@ static AdInspectorWindow *s_floatWindow = nil;
         [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal]; [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal];
         copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold]; copyBtn.tag = 1021; [copyBtn addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:copyBtn];
 
-        UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)]; l1.text = @"目标视图类:"; l1.textColor = [UIColor whiteColor]; l1.font = [UIFont systemFontOfSize:11]; [self addSubview:l1];
-        _targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(95, 32, self.bounds.size.width - 110, 26)]; _targetViewField.borderStyle = UITextBorderStyleRoundedRect; _targetViewField.backgroundColor = [UIColor darkGrayColor]; _targetViewField.textColor = [UIColor whiteColor]; _targetViewField.font = [UIFont systemFontOfSize:12]; _targetViewField.placeholder = @"如 GDTDLBusinessManager"; _targetViewField.tag = 1011; _targetViewField.delegate = self; [self addSubview:_targetViewField];
+        UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)]; l1.text = @"目标类:"; l1.textColor = [UIColor whiteColor]; l1.font = [UIFont systemFontOfSize:11]; [self addSubview:l1];
+        _targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(70, 32, self.bounds.size.width - 85, 26)]; _targetViewField.borderStyle = UITextBorderStyleRoundedRect; _targetViewField.backgroundColor = [UIColor darkGrayColor]; _targetViewField.textColor = [UIColor whiteColor]; _targetViewField.font = [UIFont systemFontOfSize:12]; _targetViewField.placeholder = @"GDTDLBusinessManager"; _targetViewField.tag = 1011; _targetViewField.delegate = self; [self addSubview:_targetViewField];
 
         UILabel *l2 = [[UILabel alloc] initWithFrame:CGRectMake(12, 64, 80, 20)]; l2.text = @"KVC路径:"; l2.textColor = [UIColor whiteColor]; l2.font = [UIFont systemFontOfSize:11]; [self addSubview:l2];
-        _keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(95, 62, self.bounds.size.width - 110, 26)]; _keyPathField.borderStyle = UITextBorderStyleRoundedRect; _keyPathField.backgroundColor = [UIColor darkGrayColor]; _keyPathField.textColor = [UIColor whiteColor]; _keyPathField.font = [UIFont systemFontOfSize:12]; _keyPathField.placeholder = @"self"; _keyPathField.tag = 1012; _keyPathField.delegate = self; [self addSubview:_keyPathField];
+        _keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(70, 62, self.bounds.size.width - 85, 26)]; _keyPathField.borderStyle = UITextBorderStyleRoundedRect; _keyPathField.backgroundColor = [UIColor darkGrayColor]; _keyPathField.textColor = [UIColor whiteColor]; _keyPathField.font = [UIFont systemFontOfSize:12]; _keyPathField.placeholder = @"self"; _keyPathField.tag = 1012; _keyPathField.delegate = self; [self addSubview:_keyPathField];
 
         UILabel *l3 = [[UILabel alloc] initWithFrame:CGRectMake(12, 94, 80, 20)]; l3.text = @"方法名:"; l3.textColor = [UIColor whiteColor]; l3.font = [UIFont systemFontOfSize:11]; [self addSubview:l3];
-        _methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(95, 92, self.bounds.size.width - 110, 26)]; _methodNameField.borderStyle = UITextBorderStyleRoundedRect; _methodNameField.backgroundColor = [UIColor darkGrayColor]; _methodNameField.textColor = [UIColor whiteColor]; _methodNameField.font = [UIFont systemFontOfSize:12]; _methodNameField.placeholder = @"如 onDestroy"; _methodNameField.tag = 1013; _methodNameField.delegate = self; [self addSubview:_methodNameField];
+        _methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(70, 92, self.bounds.size.width - 85, 26)]; _methodNameField.borderStyle = UITextBorderStyleRoundedRect; _methodNameField.backgroundColor = [UIColor darkGrayColor]; _methodNameField.textColor = [UIColor whiteColor]; _methodNameField.font = [UIFont systemFontOfSize:12]; _methodNameField.placeholder = @"onDestroy"; _methodNameField.tag = 1013; _methodNameField.delegate = self; [self addSubview:_methodNameField];
 
         UIButton *addBtn = [UIButton buttonWithType:UIButtonTypeSystem]; addBtn.frame = CGRectMake(12, 126, 60, 30); [addBtn setTitle:@"添加" forState:UIControlStateNormal]; [addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; addBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; addBtn.tag = 1014; [addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:addBtn];
         UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem]; testBtn.frame = CGRectMake(80, 126, 60, 30); [testBtn setTitle:@"测试" forState:UIControlStateNormal]; [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal]; testBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; testBtn.tag = 1015; [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:testBtn];
@@ -339,7 +327,8 @@ static AdInspectorWindow *s_floatWindow = nil;
     [self.targetViewField resignFirstResponder]; [self.keyPathField resignFirstResponder]; [self.methodNameField resignFirstResponder];
     if (!tv.length || !kp.length || !mn.length) { showToast(@"⚠️ 请填写完整规则"); return; }
     saveCustomRule(@{@"targetView": tv, @"keyPath": kp, @"methodName": mn});
-    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → [%@] %@\n", tv, kp, mn]]; showToast(@"✅ 规则已添加");
+    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → [%@] %@\n", tv, kp, mn]];
+    showToast(@"✅ 规则已添加");
 }
 - (void)testCustomRules { applyCustomRules(); }
 - (void)clearRulesTapped { clearAllRules(); clearCustomRules(); [self showLog:@"\n🗑️ 已清空\n"]; showToast(@"🗑️ 规则已清除"); }
@@ -347,16 +336,19 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)toggleDeepTracking:(UIButton *)sender { if (s_isDeepTracking) { stopDeepTracking(); [sender setTitle:@"🔬深度追踪" forState:UIControlStateNormal]; } else { startDeepTracking(); [sender setTitle:@"⏹停止深度" forState:UIControlStateNormal]; } }
 - (void)forceShow
 {
-    if (!s_floatWindow)
-    {
-        UIWindowScene *as = nil;
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } }
-        if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; }
-    }
+    if (!s_floatWindow) { UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } } if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; } }
     else { if (!self.superview) { [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; } s_floatWindow.hidden = NO; s_floatWindow.alpha = 1.0; [s_floatWindow bringSubviewToFront:self]; }
     self.hidden = NO; self.alpha = 1.0; showToast(@"👆 面板已呼出");
 }
-- (void)showLog:(NSString *)log { dispatch_async(dispatch_get_main_queue(), ^{ [self.logBuffer appendString:log]; if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)]; self.logTextView.text = self.logBuffer; if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)]; }); }
+- (void)showLog:(NSString *)log
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.logBuffer appendString:log];
+        if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)];
+        self.logTextView.text = self.logBuffer;
+        if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)];
+    });
+}
 @end
 
 // ==================== Toast ====================
@@ -365,113 +357,97 @@ static void showToast(NSString *m)
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *hw = getKeyWindow();
         if (!hw) return;
-        UIView *t = [[UIView alloc] init];
-        t.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        t.layer.cornerRadius = 12;
+        UIView *tv = [[UIView alloc] init];
+        tv.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        tv.layer.cornerRadius = 12;
         UILabel *l = [[UILabel alloc] init];
-        l.text = m; l.textColor = [UIColor whiteColor]; l.font = [UIFont boldSystemFontOfSize:14];
-        l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter;
-        [t addSubview:l];
+        l.text = m; l.textColor = [UIColor whiteColor]; l.font = [UIFont boldSystemFontOfSize:14]; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter;
+        [tv addSubview:l];
         CGSize ms = CGSizeMake([UIScreen mainScreen].bounds.size.width - 60, CGFLOAT_MAX);
         CGRect tr = [m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: l.font} context:nil];
-        CGFloat w = tr.size.width + 30, h = tr.size.height + 16;
         l.frame = CGRectMake(15, 8, tr.size.width, tr.size.height);
-        CGPoint c = CGPointMake(hw.bounds.size.width / 2, hw.bounds.size.height - 150);
-        t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
-        t.layer.zPosition = CGFLOAT_MAX;
-        [hw addSubview:t];
-        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
-            t.alpha = 0;
-        } completion:^(BOOL finished) {
-            [t removeFromSuperview];
-        }];
+        tv.frame = CGRectMake((hw.bounds.size.width - (tr.size.width + 30)) / 2, hw.bounds.size.height - 150, tr.size.width + 30, tr.size.height + 16);
+        tv.layer.zPosition = CGFLOAT_MAX;
+        [hw addSubview:tv];
+        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{ tv.alpha = 0; } completion:^(BOOL f) { [tv removeFromSuperview]; }];
     });
 }
 
 // ==================== 规则管理 ====================
-static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
 static void saveCustomRule(NSDictionary *r)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[];
-    for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"keyPath"] isEqualToString:r[@"keyPath"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; }
+    NSArray *ex = [ud arrayForKey:kCustomRulesKey];
+    if (!ex) ex = @[];
+    for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; }
     NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize];
 }
+static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
 static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; }
 static id getObjectByKeyPath(id o, NSString *kp) { if ([kp isEqualToString:@"self"]) return o; NSArray *ks = [kp componentsSeparatedByString:@"."]; id c = o; for (NSString *k in ks) { if (!c) return nil; c = [c valueForKey:k]; } return c; }
 static UIView *findViewOfClass(UIView *rt, NSString *cn) { if ([NSStringFromClass([rt class]) isEqualToString:cn]) return rt; for (UIView *sb in rt.subviews) { UIView *f = findViewOfClass(sb, cn); if (f) return f; } return nil; }
 
-// ==================== 自定义规则执行 + GDTSplashDLView 清理 ====================
+// ==================== 核心：单方法调用 + 透明视图清理 ====================
 static void applyCustomRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *cr = [ud arrayForKey:kCustomRulesKey];
-    if (!cr.count) return;
+    if (!cr || !cr.count) return;
 
-    BOOL didExecuteAnyMethod = NO;
+    BOOL didExecute = NO;
 
     for (NSDictionary *r in cr)
     {
         NSString *tvc = r[@"targetView"], *kp = r[@"keyPath"], *mn = r[@"methodName"];
         if (!tvc || !kp || !mn) continue;
 
-        BOOL found = NO; id tg = nil;
+        id tg = nil;
         for (UIWindow *w in getAllWindows())
         {
             if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
             UIView *tv = findViewOfClass(w, tvc);
-            if (tv) { tg = getObjectByKeyPath(tv, kp); if (tg) { found = YES; break; } }
+            if (tv) { tg = getObjectByKeyPath(tv, kp); if (tg) break; }
         }
-        if (!found)
+        if (!tg)
         {
-            Class targetClass = NSClassFromString(tvc);
-            if (targetClass)
+            Class c = NSClassFromString(tvc);
+            if (c)
             {
-                SEL ss[] = {@selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager), @selector(instance)};
-                for (int i = 0; i < 5 && !tg; i++) if ([targetClass respondsToSelector:ss[i]]) tg = ((id (*)(id, SEL))objc_msgSend)(targetClass, ss[i]);
-                if (!tg) { id ad = [UIApplication sharedApplication].delegate; @try { tg = [ad valueForKey:tvc]; } @catch (NSException *e) {} }
+                SEL ss[] = {@selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager)};
+                for (int i = 0; i < 4 && !tg; i++) if ([c respondsToSelector:ss[i]]) tg = ((id(*)(id,SEL))objc_msgSend)(c, ss[i]);
+                if (!tg) { id ad = [UIApplication sharedApplication].delegate; @try { tg = [ad valueForKey:tvc]; } @catch(NSException *e){} }
             }
         }
-        if ([kp isEqualToString:@"self"] && !tg) { /* nop */ } else if (tg) tg = getObjectByKeyPath(tg, kp);
+        if ([kp isEqualToString:@"self"]) {} else if (tg) tg = getObjectByKeyPath(tg, kp);
         if (!tg) continue;
         SEL m = NSSelectorFromString(mn);
         if (![tg respondsToSelector:m]) continue;
 
         NSMethodSignature *sig = [tg methodSignatureForSelector:m]; NSUInteger ac = sig.numberOfArguments;
-        if (ac <= 2) ((void (*)(id, SEL))objc_msgSend)(tg, m);
-        else if (ac == 3) { const char *t = [sig getArgumentTypeAtIndex:2]; if (strcmp(t, "B") == 0) ((void (*)(id, SEL, BOOL))objc_msgSend)(tg, m, YES); else ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil); }
-        else { NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig]; [inv setTarget:tg]; [inv setSelector:m]; id nilArg = nil; for (NSUInteger i = 2; i < ac; i++) [inv setArgument:&nilArg atIndex:i]; [inv invoke]; }
-        didExecuteAnyMethod = YES;
+        if (ac <= 2) ((void(*)(id,SEL))objc_msgSend)(tg, m);
+        else if (ac == 3) { const char *t = [sig getArgumentTypeAtIndex:2]; if (strcmp(t,"B")==0) ((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,YES); else ((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); }
+        else { NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig]; [inv setTarget:tg]; [inv setSelector:m]; id nilArg = nil; for (NSUInteger i=2;i<ac;i++) [inv setArgument:&nilArg atIndex:i]; [inv invoke]; }
+        didExecute = YES;
     }
 
-    // ========== 清理 GDTSplashDLView ==========
-    if (didExecuteAnyMethod)
+    // 清理透明图层
+    if (didExecute)
     {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             for (UIWindow *w in getAllWindows())
             {
                 if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
                 NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
                 while (views.count > 0)
                 {
-                    UIView *v = [views lastObject];
-                    [views removeLastObject];
+                    UIView *v = [views lastObject]; [views removeLastObject];
                     NSString *cn = NSStringFromClass([v class]);
-                    if ([cn isEqualToString:@"GDTSplashDLView"])
+                    if ([cn isEqualToString:@"GDTSplashDLView"] || [cn isEqualToString:@"GDTSplashViewController"])
                     {
                         [v removeFromSuperview];
-                        [[AdInspectorPanel shared] showLog:@"\n🧹 已移除 GDTSplashDLView\n"];
+                        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🧹 已移除 %@\n", cn]];
                     }
-                    else if ([cn isEqualToString:@"GDTSplashViewController"])
-                    {
-                        [v removeFromSuperview];
-                        [[AdInspectorPanel shared] showLog:@"\n🧹 已移除 GDTSplashViewController\n"];
-                    }
-                    else if ([cn containsString:@"splash_ad"])
-                    {
-                        w.hidden = YES; w.windowLevel = -1000; [w resignKeyWindow];
-                        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🧹 已隐藏广告窗口: %@\n", cn]];
-                    }
+                    if ([cn containsString:@"splash_ad"]) { w.hidden = YES; w.windowLevel = -1000; [w resignKeyWindow]; }
                     [views addObjectsFromArray:v.subviews];
                 }
             }
@@ -482,14 +458,13 @@ static void applyCustomRules(void)
             }
         });
     }
-
-    showToast(@"✅ 自定义规则已执行");
 }
 
 static void applyAllSavedRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    if (([ud arrayForKey:kCustomRulesKey] ?: @[]).count > 0) applyCustomRules();
+    NSArray *cr = [ud arrayForKey:kCustomRulesKey];
+    if (cr && cr.count > 0) applyCustomRules();
 }
 
 // ==================== Hook ====================
@@ -519,10 +494,26 @@ static void applyAllSavedRules(void)
 %ctor
 {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } }
-        if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; AdInspectorPanel *p = [AdInspectorPanel shared]; p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); [s_floatWindow addSubview:p]; s_floatWindow.panel = p; }
-        showToast(@"🔍 已激活 | 双指呼面板 | 方法+清理");
+        UIWindowScene *as = nil;
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes)
+        {
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; }
+        }
+        if (as)
+        {
+            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
+            s_floatWindow.windowScene = as;
+            AdInspectorPanel *p = [AdInspectorPanel shared];
+            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360);
+            [s_floatWindow addSubview:p];
+            s_floatWindow.panel = p;
+        }
+        showToast(@"🔍 AdInspector 已激活 | 双指呼出面板");
         if (isFlexingAvailable()) raiseFlexingWindow();
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { applyAllSavedRules(); if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO; if (isFlexingAvailable()) raiseFlexingWindow(); }];
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            applyAllSavedRules();
+            if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO;
+            if (isFlexingAvailable()) raiseFlexingWindow();
+        }];
     });
 }
