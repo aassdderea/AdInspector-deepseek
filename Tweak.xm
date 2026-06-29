@@ -1,12 +1,32 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
+#import <execinfo.h>
 
 static NSString *const kRulesKey = @"AdInspector_SkipRules";
 static NSString *const kCustomRulesKey = @"AdInspector_CustomRules";
 static NSMutableArray *s_trackedMethods = nil;
 static BOOL s_isTracking = NO;
 static NSDate *s_trackStartTime = nil;
+static BOOL s_isDeepTracking = NO;
+static NSDate *s_deepTrackStartTime = nil;
+static NSMutableArray *s_deepTrackedMethods = nil;
+
+// ==================== 调用栈获取 ====================
+static NSString *getCallStackSymbols(void)
+{
+    void *callstack[128];
+    int frames = backtrace(callstack, 128);
+    char **strs = backtrace_symbols(callstack, frames);
+    NSMutableString *result = [NSMutableString string];
+    for (int i = 0; i < frames; i++)
+    {
+        [result appendFormat:@"%s\n", strs[i]];
+    }
+    free(strs);
+    return result;
+}
 
 // ==================== Ivar 读取 ====================
 static Ivar ATFindIvar(Class cls, const char *name)
@@ -125,7 +145,7 @@ static void stopTracking(void)
 
 static void recordMethodCall(NSString *name)
 {
-    if (!s_isTracking)
+    if (!s_isTracking && !s_isDeepTracking)
     {
         return;
     }
@@ -139,23 +159,53 @@ static void recordMethodCall(NSString *name)
         [name isEqualToString:@"gdm"] ||
         [name hasPrefix:@"init"] ||
         [name hasPrefix:@"."] ||
-        [name hasPrefix:@"_"])
+        [name hasPrefix:@"_"] ||
+        [name hasPrefix:@"cxx"] ||
+        [name isEqualToString:@".cxx_destruct"])
     {
         return;
     }
-    @synchronized(s_trackedMethods)
+    if (s_isTracking)
     {
-        [s_trackedMethods addObject:@{
-            @"method": name,
-            @"time": @([[NSDate date] timeIntervalSinceDate:s_trackStartTime])
-        }];
+        @synchronized(s_trackedMethods)
+        {
+            [s_trackedMethods addObject:@{
+                @"method": name,
+                @"time": @([[NSDate date] timeIntervalSinceDate:s_trackStartTime])
+            }];
+        }
+    }
+    if (s_isDeepTracking)
+    {
+        @synchronized(s_deepTrackedMethods)
+        {
+            [s_deepTrackedMethods addObject:@{
+                @"method": name,
+                @"time": @([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])
+            }];
+        }
     }
 }
 
-// ==================== 增强手势分析（必须在 recordMethodCall 之后） ====================
+static void startDeepTracking(void)
+{
+    s_deepTrackedMethods = [NSMutableArray array];
+    s_isDeepTracking = YES;
+    s_deepTrackStartTime = [NSDate date];
+}
+
+static NSArray *stopDeepTracking(void)
+{
+    s_isDeepTracking = NO;
+    NSArray *result = [s_deepTrackedMethods copy];
+    s_deepTrackedMethods = nil;
+    s_deepTrackStartTime = nil;
+    return result;
+}
+
+// ==================== 增强手势分析 ====================
 static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti)
 {
-    // 方法1: 通过 valueForKey 获取 _targets
     @try
     {
         NSArray *tgts = [gr valueForKey:@"_targets"];
@@ -193,7 +243,6 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
     {
     }
 
-    // 方法2: 通过 Ivar 直接读取 _targets
     id targets = ATGetObjectIvarDirect(gr, "_targets");
     if (targets && [targets isKindOfClass:[NSArray class]] && [(NSArray *)targets count] > 0)
     {
@@ -217,12 +266,11 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
         }
     }
 
-    // 方法3: 尝试直接访问 recognizer 的 delegate
     if ([gr respondsToSelector:@selector(delegate)] && gr.delegate)
     {
         id delegate = gr.delegate;
         [o appendFormat:@"    delegate: %@\n", NSStringFromClass([delegate class])];
-        NSArray *possibleActions = @[@"handleGesture:", @"handleTap:", @"handleSwipe:", @"onTap:", @"onGesture:", @"skipAction", @"closeAction", @"dismissAction", @"adSkipAction"];
+        NSArray *possibleActions = @[@"handleGesture:", @"handleTap:", @"handleSwipe:", @"onTap:", @"onGesture:", @"skipAction", @"closeAction", @"dismissAction", @"adSkipAction", @"onSkip", @"skipAd", @"closeAd", @"dismissAd"];
         for (NSString *actionName in possibleActions)
         {
             SEL sel = NSSelectorFromString(actionName);
@@ -239,23 +287,6 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
                 return;
             }
         }
-    }
-
-    // 方法4: 尝试获取 _gestureFlags 或 _targets 的其他可能名称
-    @try
-    {
-        NSArray *ivarNames = @[@"_targets", @"_target", @"_action", @"targets", @"targetActions", @"_targetActions"];
-        for (NSString *ivarName in ivarNames)
-        {
-            id val = ATGetObjectIvarDirect(gr, [ivarName UTF8String]);
-            if (val)
-            {
-                [o appendFormat:@"    ivar %@: %@\n", ivarName, val];
-            }
-        }
-    }
-    @catch (NSException *e)
-    {
     }
 
     [o appendString:@"    (无法提取)\n"];
@@ -279,6 +310,10 @@ static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
+static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti);
+static NSString *getCallStackSymbols(void);
+static void startDeepTracking(void);
+static NSArray *stopDeepTracking(void);
 
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
@@ -302,6 +337,13 @@ static UIWindow *getKeyWindow(void)
         }
     }
     return nil;
+}
+
+// ==================== Hook GDTDLBusinessManager 全部方法 ====================
+static void logBusinessManagerMethodCall(id self, SEL _cmd)
+{
+    NSString *methodName = NSStringFromSelector(_cmd);
+    recordMethodCall(methodName);
 }
 
 // ==================== 悬浮窗 ====================
@@ -372,6 +414,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)addCustomRuleFromFields;
 - (void)testCustomRules;
 - (void)copyLog;
+- (void)toggleDeepTracking:(UIButton *)sender;
 @end
 
 @implementation AdInspectorPanel
@@ -402,7 +445,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbShow:) name:UIKeyboardWillShowNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbHide:) name:UIKeyboardWillHideNotification object:nil];
 
-        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 20)];
+        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 180, 20)];
         t.text = @"🔍 AdInspector | 编辑+追踪";
         t.textColor = [UIColor cyanColor];
         t.font = [UIFont boldSystemFontOfSize:12];
@@ -411,7 +454,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 
         // 复制按钮
         UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        copyBtn.frame = CGRectMake(self.bounds.size.width - 180, 3, 55, 30);
+        copyBtn.frame = CGRectMake(self.bounds.size.width - 235, 3, 55, 30);
         [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal];
         [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal];
         copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
@@ -430,7 +473,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         _targetViewField.backgroundColor = [UIColor darkGrayColor];
         _targetViewField.textColor = [UIColor whiteColor];
         _targetViewField.font = [UIFont systemFontOfSize:12];
-        _targetViewField.placeholder = @"如 GDTDLRootView";
+        _targetViewField.placeholder = @"如 GDTDLBusinessManager";
         _targetViewField.tag = 1011;
         _targetViewField.delegate = self;
         [self addSubview:_targetViewField];
@@ -446,7 +489,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         _keyPathField.backgroundColor = [UIColor darkGrayColor];
         _keyPathField.textColor = [UIColor whiteColor];
         _keyPathField.font = [UIFont systemFontOfSize:12];
-        _keyPathField.placeholder = @"如 delegate 或 self";
+        _keyPathField.placeholder = @"如 self 或 delegate";
         _keyPathField.tag = 1012;
         _keyPathField.delegate = self;
         [self addSubview:_keyPathField];
@@ -511,6 +554,16 @@ static AdInspectorWindow *s_floatWindow = nil;
         trkBtn.tag = 1018;
         [trkBtn addTarget:self action:@selector(toggleTracking:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:trkBtn];
+
+        // 深度追踪按钮
+        UIButton *deepBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        deepBtn.frame = CGRectMake(110, 160, 100, 30);
+        [deepBtn setTitle:@"🔬深度追踪" forState:UIControlStateNormal];
+        [deepBtn setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.7 alpha:1.0] forState:UIControlStateNormal];
+        deepBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        deepBtn.tag = 1022;
+        [deepBtn addTarget:self action:@selector(toggleDeepTracking:) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:deepBtn];
 
         UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         closeBtn.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
@@ -612,15 +665,15 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)fillPreset1
 {
-    self.targetViewField.text = @"GDTDLRootView";
-    self.keyPathField.text = @"delegate";
+    self.targetViewField.text = @"GDTDLBusinessManager";
+    self.keyPathField.text = @"self";
     self.methodNameField.text = @"onDestroy";
 }
 
 - (void)fillPreset2
 {
-    self.targetViewField.text = @"GDTDLRootView";
-    self.keyPathField.text = @"delegate";
+    self.targetViewField.text = @"GDTDLBusinessManager";
+    self.keyPathField.text = @"self";
     self.methodNameField.text = @"pauseTimer";
 }
 
@@ -701,6 +754,43 @@ static AdInspectorWindow *s_floatWindow = nil;
         [sender setTitle:@"⏹停止追踪" forState:UIControlStateNormal];
         [sender setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
         [self showLog:@"\n🔍 开始追踪... 请手动点击跳过按钮\n"];
+    }
+}
+
+- (void)toggleDeepTracking:(UIButton *)sender
+{
+    if (s_isDeepTracking)
+    {
+        NSArray *methods = stopDeepTracking();
+        [sender setTitle:@"🔬深度追踪" forState:UIControlStateNormal];
+        [sender setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.7 alpha:1.0] forState:UIControlStateNormal];
+        if (methods.count > 0)
+        {
+            NSMutableString *o = [NSMutableString stringWithFormat:@"\n🔬 深度追踪结果 (%lu个 GDTDLBusinessManager 方法):\n", (unsigned long)methods.count];
+            for (NSDictionary *e in methods)
+            {
+                [o appendFormat:@"  +%.3fs → %@\n", [e[@"time"] doubleValue], e[@"method"]];
+            }
+            [self showLog:o];
+            // 自动填入第一个方法作为候选
+            if (methods.count > 0)
+            {
+                NSDictionary *first = methods[0];
+                self.methodNameField.text = first[@"method"];
+                showToast([NSString stringWithFormat:@"💡 已填入: %@", first[@"method"]]);
+            }
+        }
+        else
+        {
+            [self showLog:@"\n⚠️ 深度追踪未捕获到 GDTDLBusinessManager 方法调用\n"];
+        }
+    }
+    else
+    {
+        startDeepTracking();
+        [sender setTitle:@"⏹停止深度" forState:UIControlStateNormal];
+        [sender setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+        [self showLog:@"\n🔬 深度追踪已开启，点击跳过按钮后回来点停止\n"];
     }
 }
 
@@ -1085,21 +1175,24 @@ static void applyCustomRules(void)
                 continue;
             }
             UIView *tv = findViewOfClass(w, tvc);
-            if (tv)
+            if (!tv)
             {
-                id tg = getObjectByKeyPath(tv, kp);
-                if (tg && [tg respondsToSelector:NSSelectorFromString(mn)])
+                // 不是视图类，尝试直接查找对象
+                // 通过 findViewOfClass 找不到就尝试在所有窗口的 rootViewController 里找
+                continue;
+            }
+            id tg = getObjectByKeyPath(tv, kp);
+            if (tg && [tg respondsToSelector:NSSelectorFromString(mn)])
+            {
+                SEL m = NSSelectorFromString(mn);
+                NSMethodSignature *sig = [tg methodSignatureForSelector:m];
+                if (sig.numberOfArguments <= 2)
                 {
-                    SEL m = NSSelectorFromString(mn);
-                    NSMethodSignature *sig = [tg methodSignatureForSelector:m];
-                    if (sig.numberOfArguments <= 2)
-                    {
-                        ((void (*)(id, SEL))objc_msgSend)(tg, m);
-                    }
-                    else
-                    {
-                        ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil);
-                    }
+                    ((void (*)(id, SEL))objc_msgSend)(tg, m);
+                }
+                else
+                {
+                    ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil);
                 }
             }
         }
@@ -1440,6 +1533,130 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
     }
 }
 
+// ==================== Hook 手势 setState: + 打印调用栈 ====================
+%hook UIGestureRecognizer
+- (void)setState:(UIGestureRecognizerState)state
+{
+    %orig;
+    if (state == UIGestureRecognizerStateEnded)
+    {
+        // 获取手势所在 view
+        UIView *view = self.view;
+        if (!view)
+        {
+            return;
+        }
+        // 检查这个 view 是不是跳过按钮
+        UIView *skipView = findSkipLabelInView(view);
+        if (!skipView)
+        {
+            // 也检查父视图
+            UIView *parent = view.superview;
+            while (parent && ![parent isKindOfClass:[UIWindow class]])
+            {
+                skipView = findSkipLabelInView(parent);
+                if (skipView)
+                {
+                    break;
+                }
+                parent = parent.superview;
+            }
+        }
+        if (skipView)
+        {
+            NSString *callStack = getCallStackSymbols();
+            NSMutableString *log = [NSMutableString string];
+            [log appendFormat:@"\n🔔 手势触发! 手势:%@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
+            [log appendFormat:@"📚 调用栈:\n%@\n", callStack];
+
+            // 输出手势的 target 信息
+            @try
+            {
+                id targets = [self valueForKey:@"_targets"];
+                if (targets && [targets isKindOfClass:[NSArray class]])
+                {
+                    for (id t in (NSArray *)targets)
+                    {
+                        id target = [t valueForKey:@"_target"];
+                        id action = [t valueForKey:@"_action"];
+                        [log appendFormat:@"🎯 target: %@ → %@\n", NSStringFromClass([target class]), action];
+                        recordMethodCall([action isKindOfClass:[NSString class]] ? action : NSStringFromSelector((SEL)[action pointerValue]));
+                    }
+                }
+            }
+            @catch (NSException *e)
+            {
+                [log appendString:@"(无法读取 _targets)\n"];
+            }
+            @try
+            {
+                id delegate = self.delegate;
+                if (delegate)
+                {
+                    [log appendFormat:@"🎯 delegate: %@\n", NSStringFromClass([delegate class])];
+                }
+            }
+            @catch (NSException *e)
+            {
+            }
+
+            [log appendString:@"══════\n"];
+            [[AdInspectorPanel shared] showLog:log];
+            saveToFile(log);
+        }
+    }
+}
+%end
+
+// ==================== Hook GDTDLBusinessManager 全部方法 ====================
+// 动态 hook 所有实例方法
+static void hookAllMethodsOfClass(Class cls)
+{
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int i = 0; i < methodCount; i++)
+    {
+        SEL sel = method_getName(methods[i]);
+        NSString *methodName = NSStringFromSelector(sel);
+        // 跳过 .cxx_destruct 和一些基本方法
+        if ([methodName hasPrefix:@"."] ||
+            [methodName hasPrefix:@"init"] ||
+            [methodName isEqualToString:@"dealloc"] ||
+            [methodName isEqualToString:@"class"] ||
+            [methodName isEqualToString:@"hash"] ||
+            [methodName isEqualToString:@"isEqual:"] ||
+            [methodName isEqualToString:@"self"] ||
+            [methodName isEqualToString:@"performSelector:"] ||
+            [methodName isEqualToString:@"respondsToSelector:"] ||
+            [methodName isEqualToString:@"methodSignatureForSelector:"] ||
+            [methodName isEqualToString:@"forwardInvocation:"] ||
+            [methodName isEqualToString:@"doesNotRecognizeSelector:"])
+        {
+            continue;
+        }
+        // 获取方法签名
+        const char *typeEncoding = method_getTypeEncoding(methods[i]);
+        // 只 hook 返回 void 的无参或单参方法
+        if (typeEncoding && typeEncoding[0] == 'v')
+        {
+            // 替换为日志记录实现
+            IMP originalIMP = method_getImplementation(methods[i]);
+            // 使用 block 创建新 IMP
+            id newBlock = ^(id self) {
+                // 先调用原始实现
+                if (originalIMP)
+                {
+                    ((void (*)(id, SEL))originalIMP)(self, sel);
+                }
+                recordMethodCall(methodName);
+            };
+            IMP newIMP = imp_implementationWithBlock(newBlock);
+            method_setImplementation(methods[i], newIMP);
+        }
+    }
+    free(methods);
+}
+
 // ==================== Hook ====================
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e
@@ -1525,7 +1742,28 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
             s_floatWindow.panel = p;
             s_floatWindow.hidden = NO;
         }
-        showToast(@"🔍 已激活 | 双指呼面板 | 追踪+规则");
+
+        // Hook GDTDLBusinessManager 的所有方法
+        Class bmClass = NSClassFromString(@"GDTDLBusinessManager");
+        if (bmClass)
+        {
+            hookAllMethodsOfClass(bmClass);
+            NSLog(@"[AdInspector] ✅ 已 Hook GDTDLBusinessManager 全部方法");
+        }
+        else
+        {
+            NSLog(@"[AdInspector] ⚠️ GDTDLBusinessManager 类未找到，延迟重试");
+            // 延迟重试
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                Class bmClass2 = NSClassFromString(@"GDTDLBusinessManager");
+                if (bmClass2)
+                {
+                    hookAllMethodsOfClass(bmClass2);
+                }
+            });
+        }
+
+        showToast(@"🔍 已激活 | 双指呼面板 | 深度追踪");
         if (isFlexingAvailable())
         {
             raiseFlexingWindow();
