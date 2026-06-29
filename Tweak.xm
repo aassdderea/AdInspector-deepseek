@@ -21,38 +21,9 @@ static NSString *getCallStackSymbols(void)
     int frames = backtrace(callstack, 128);
     char **strs = backtrace_symbols(callstack, frames);
     NSMutableString *result = [NSMutableString string];
-    for (int i = 0; i < frames; i++)
-    {
-        [result appendFormat:@"%s\n", strs[i]];
-    }
+    for (int i = 0; i < frames; i++) { [result appendFormat:@"%s\n", strs[i]]; }
     free(strs);
     return result;
-}
-
-// ==================== Ivar 读取 ====================
-static Ivar ATFindIvar(Class cls, const char *name)
-{
-    for (Class c = cls; c; c = class_getSuperclass(c))
-    {
-        Ivar ivar = class_getInstanceVariable(c, name);
-        if (ivar) return ivar;
-    }
-    return NULL;
-}
-
-static SEL ATGetSelectorIvar(id obj, const char *name)
-{
-    Ivar ivar = ATFindIvar(object_getClass(obj), name);
-    if (!ivar) return NULL;
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    return *(SEL *)((uint8_t *)(__bridge void *)obj + offset);
-}
-
-static id ATGetObjectIvarDirect(id obj, const char *name)
-{
-    Ivar ivar = ATFindIvar(object_getClass(obj), name);
-    if (!ivar) return nil;
-    return object_getIvar(obj, ivar);
 }
 
 // ==================== 获取所有窗口 ====================
@@ -61,8 +32,7 @@ static NSArray<UIWindow *> *getAllWindows(void)
     NSMutableArray *all = [NSMutableArray array];
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes)
     {
-        if ([scene isKindOfClass:[UIWindowScene class]])
-            [all addObjectsFromArray:[(UIWindowScene *)scene windows]];
+        if ([scene isKindOfClass:[UIWindowScene class]]) [all addObjectsFromArray:[(UIWindowScene *)scene windows]];
     }
     if (all.count == 0)
     {
@@ -80,66 +50,50 @@ static BOOL isFlexingAvailable(void)
     for (UIWindow *w in getAllWindows())
     {
         NSString *cn = NSStringFromClass([w class]);
-        if ([cn isEqualToString:@"FLEXWindow"] ||
-            [cn isEqualToString:@"FLEXExplorerWindow"] ||
-            [cn isEqualToString:@"FLEXManagerWindow"] ||
-            [cn isEqualToString:@"FLEXOverlayWindow"]) return YES;
+        if ([cn isEqualToString:@"FLEXWindow"] || [cn isEqualToString:@"FLEXExplorerWindow"] ||
+            [cn isEqualToString:@"FLEXManagerWindow"] || [cn isEqualToString:@"FLEXOverlayWindow"]) return YES;
     }
     return NO;
 }
-
 static void raiseFlexingWindow(void)
 {
     if (s_isKeyboardVisible) return;
     for (UIWindow *w in getAllWindows())
     {
         NSString *cn = NSStringFromClass([w class]);
-        if ([cn isEqualToString:@"FLEXWindow"] ||
-            [cn isEqualToString:@"FLEXExplorerWindow"] ||
-            [cn isEqualToString:@"FLEXManagerWindow"] ||
-            [cn isEqualToString:@"FLEXOverlayWindow"])
-        {
-            w.windowLevel = CGFLOAT_MAX; w.hidden = NO; w.alpha = 1.0; [w makeKeyAndVisible]; return;
-        }
+        if ([cn isEqualToString:@"FLEXWindow"] || [cn isEqualToString:@"FLEXExplorerWindow"] ||
+            [cn isEqualToString:@"FLEXManagerWindow"] || [cn isEqualToString:@"FLEXOverlayWindow"])
+        { w.windowLevel = CGFLOAT_MAX; w.hidden = NO; w.alpha = 1.0; [w makeKeyAndVisible]; return; }
     }
 }
 
 // ==================== 方法追踪 ====================
-static void startTracking(void)
-{
-    s_trackedMethods = [NSMutableArray array]; s_isTracking = YES; s_trackStartTime = [NSDate date];
-}
+static void startTracking(void) { s_trackedMethods = [NSMutableArray array]; s_isTracking = YES; s_trackStartTime = [NSDate date]; }
 static void stopTracking(void) { s_isTracking = NO; }
 
 static void hookAllMethodsOfClass(Class cls)
 {
     if (!cls) return;
     NSString *className = NSStringFromClass(cls);
-    unsigned int methodCount = 0;
-    Method *methods = class_copyMethodList(cls, &methodCount);
-    for (unsigned int i = 0; i < methodCount; i++)
+    unsigned int mc = 0; Method *methods = class_copyMethodList(cls, &mc);
+    for (unsigned int i = 0; i < mc; i++)
     {
         SEL sel = method_getName(methods[i]);
-        NSString *methodName = NSStringFromSelector(sel);
-        if ([methodName hasPrefix:@"."] || [methodName hasPrefix:@"init"] ||
-            [methodName isEqualToString:@"dealloc"] || [methodName isEqualToString:@"class"] ||
-            [methodName hasPrefix:@"hash"] || [methodName hasPrefix:@"isEqual"] ||
-            [methodName hasPrefix:@"performSelector"] || [methodName hasPrefix:@"respondsToSelector"] ||
-            [methodName hasPrefix:@"methodSignature"] || [methodName hasPrefix:@"forwardInvocation"] ||
-            [methodName hasPrefix:@"doesNotRecognize"]) continue;
-        const char *typeEncoding = method_getTypeEncoding(methods[i]);
-        if (typeEncoding && typeEncoding[0] == 'v')
+        NSString *mn = NSStringFromSelector(sel);
+        if ([mn hasPrefix:@"."] || [mn hasPrefix:@"init"] || [mn isEqualToString:@"dealloc"] || [mn isEqualToString:@"class"] ||
+            [mn hasPrefix:@"hash"] || [mn hasPrefix:@"isEqual"] || [mn hasPrefix:@"performSelector"] ||
+            [mn hasPrefix:@"respondsToSelector"] || [mn hasPrefix:@"methodSignature"] || [mn hasPrefix:@"forwardInvocation"] ||
+            [mn hasPrefix:@"doesNotRecognize"]) continue;
+        const char *te = method_getTypeEncoding(methods[i]);
+        if (te && te[0] == 'v')
         {
-            IMP originalIMP = method_getImplementation(methods[i]);
-            NSString *fullMethodName = [NSString stringWithFormat:@"[%@] %@", className, methodName];
-            id newBlock = ^(id self) {
-                if (originalIMP) ((void (*)(id, SEL))originalIMP)(self, sel);
-                if (!s_isTracking && !s_isDeepTracking) return;
-                if (s_isTracking) @synchronized(s_trackedMethods) { [s_trackedMethods addObject:@{@"method": fullMethodName, @"time": @([[NSDate date] timeIntervalSinceDate:s_trackStartTime])}]; }
-                if (s_isDeepTracking) @synchronized(s_deepTrackedMethods) { [s_deepTrackedMethods addObject:@{@"method": fullMethodName, @"time": @([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}]; }
+            IMP oi = method_getImplementation(methods[i]);
+            NSString *full = [NSString stringWithFormat:@"[%@] %@", className, mn];
+            id block = ^(id self) { if (oi) ((void(*)(id,SEL))oi)(self, sel); if (!s_isTracking && !s_isDeepTracking) return;
+                if (s_isTracking) @synchronized(s_trackedMethods) { [s_trackedMethods addObject:@{@"method":full,@"time":@([[NSDate date] timeIntervalSinceDate:s_trackStartTime])}]; }
+                if (s_isDeepTracking) @synchronized(s_deepTrackedMethods) { [s_deepTrackedMethods addObject:@{@"method":full,@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}]; }
             };
-            IMP newIMP = imp_implementationWithBlock(newBlock);
-            method_setImplementation(methods[i], newIMP);
+            method_setImplementation(methods[i], imp_implementationWithBlock(block));
         }
     }
     free(methods);
@@ -154,48 +108,27 @@ static void startDeepTracking(void)
 }
 static NSArray *stopDeepTracking(void) { s_isDeepTracking = NO; NSArray *r = [s_deepTrackedMethods copy]; s_deepTrackedMethods = nil; s_deepTrackStartTime = nil; return r; }
 
-// ==================== 手势分析 ====================
-static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti)
-{
-    @try { NSArray *tgts = [gr valueForKey:@"_targets"]; if (tgts && [tgts isKindOfClass:[NSArray class]] && tgts.count > 0) for (id t in tgts) { id target = [t valueForKey:@"_target"]; id ao = [t valueForKey:@"_action"]; NSString *as = nil; if ([ao isKindOfClass:[NSString class]]) as = ao; else if ([ao isKindOfClass:[NSValue class]]) as = NSStringFromSelector((SEL)[ao pointerValue]); if (target && as) { [o appendFormat:@"    → %@.%@ (KVC)\n", NSStringFromClass([target class]), as]; [ti addObject:@{@"viewClass": NSStringFromClass([cur class]), @"gestureClass": NSStringFromClass([gr class]), @"targetClass": NSStringFromClass([target class]), @"action": as}]; return; } } } @catch (NSException *e) {}
-    id targets = ATGetObjectIvarDirect(gr, "_targets"); if (targets && [targets isKindOfClass:[NSArray class]] && [(NSArray *)targets count] > 0) for (id t in (NSArray *)targets) { id target = ATGetObjectIvarDirect(t, "_target"); SEL action = ATGetSelectorIvar(t, "_action"); if (target && action) { NSString *as = NSStringFromSelector(action); [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as]; [ti addObject:@{@"viewClass": NSStringFromClass([cur class]), @"gestureClass": NSStringFromClass([gr class]), @"targetClass": NSStringFromClass([target class]), @"action": as}]; return; } }
-    [o appendString:@"    (无法提取)\n"];
-}
-
 // ==================== 前置声明 ====================
-static void saveToFile(NSString *log);
-static void analyzeTouchView(UIView *v, CGPoint pt);
-static void saveRule(NSDictionary *r);
 static void applyAllSavedRules(void);
-static UIView *findMatchingView(UIView *root, NSDictionary *r);
 static void clearAllRules(void);
 static void clearCustomRules(void);
 static void showToast(NSString *msg);
 static UIWindow *getKeyWindow(void);
-static UIView *findSkipLabelInView(UIView *root);
 static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
+static UIView *findSkipLabelInView(UIView *root);
+static void saveRule(NSDictionary *r);
 
-static NSDate *s_lastAnalysisTime = nil;
-static const NSTimeInterval kMinAnalysisInterval = 0.3;
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
 static NSDate *s_ignoreSingleTouchUntil = nil;
 
 static UIWindow *getKeyWindow(void)
 {
-    for (UIWindow *w in getAllWindows())
-    {
-        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-        if (w.isKeyWindow) return w;
-    }
-    for (UIWindow *w in getAllWindows())
-    {
-        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-        if (!w.hidden && w.alpha > 0) return w;
-    }
+    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue; if (w.isKeyWindow) return w; }
+    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue; if (!w.hidden && w.alpha > 0) return w; }
     return nil;
 }
 
@@ -244,12 +177,12 @@ static AdInspectorWindow *s_floatWindow = nil;
         UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 180, 20)]; t.text = @"🔍 AdInspector"; t.textColor = [UIColor cyanColor]; t.font = [UIFont boldSystemFontOfSize:12]; t.tag = 1001; [self addSubview:t];
         UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem]; copyBtn.frame = CGRectMake(self.bounds.size.width - 235, 3, 55, 30); [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal]; [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal]; copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold]; copyBtn.tag = 1021; [copyBtn addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:copyBtn];
 
-        UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)]; l1.text = @"目标视图类:"; l1.textColor = [UIColor whiteColor]; l1.font = [UIFont systemFontOfSize:11]; [self addSubview:l1];
-        _targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(95, 32, self.bounds.size.width - 110, 26)]; _targetViewField.borderStyle = UITextBorderStyleRoundedRect; _targetViewField.backgroundColor = [UIColor darkGrayColor]; _targetViewField.textColor = [UIColor whiteColor]; _targetViewField.font = [UIFont systemFontOfSize:12]; _targetViewField.placeholder = @"GDTDLBusinessManager"; _targetViewField.tag = 1011; _targetViewField.delegate = self; [self addSubview:_targetViewField];
+        UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)]; l1.text = @"目标类:"; l1.textColor = [UIColor whiteColor]; l1.font = [UIFont systemFontOfSize:11]; [self addSubview:l1];
+        _targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(70, 32, self.bounds.size.width - 85, 26)]; _targetViewField.borderStyle = UITextBorderStyleRoundedRect; _targetViewField.backgroundColor = [UIColor darkGrayColor]; _targetViewField.textColor = [UIColor whiteColor]; _targetViewField.font = [UIFont systemFontOfSize:12]; _targetViewField.placeholder = @"GDTDLBusinessManager"; _targetViewField.tag = 1011; _targetViewField.delegate = self; [self addSubview:_targetViewField];
         UILabel *l2 = [[UILabel alloc] initWithFrame:CGRectMake(12, 64, 80, 20)]; l2.text = @"KVC路径:"; l2.textColor = [UIColor whiteColor]; l2.font = [UIFont systemFontOfSize:11]; [self addSubview:l2];
-        _keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(95, 62, self.bounds.size.width - 110, 26)]; _keyPathField.borderStyle = UITextBorderStyleRoundedRect; _keyPathField.backgroundColor = [UIColor darkGrayColor]; _keyPathField.textColor = [UIColor whiteColor]; _keyPathField.font = [UIFont systemFontOfSize:12]; _keyPathField.placeholder = @"self"; _keyPathField.tag = 1012; _keyPathField.delegate = self; [self addSubview:_keyPathField];
+        _keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(70, 62, self.bounds.size.width - 85, 26)]; _keyPathField.borderStyle = UITextBorderStyleRoundedRect; _keyPathField.backgroundColor = [UIColor darkGrayColor]; _keyPathField.textColor = [UIColor whiteColor]; _keyPathField.font = [UIFont systemFontOfSize:12]; _keyPathField.placeholder = @"self"; _keyPathField.tag = 1012; _keyPathField.delegate = self; [self addSubview:_keyPathField];
         UILabel *l3 = [[UILabel alloc] initWithFrame:CGRectMake(12, 94, 80, 20)]; l3.text = @"方法名:"; l3.textColor = [UIColor whiteColor]; l3.font = [UIFont systemFontOfSize:11]; [self addSubview:l3];
-        _methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(95, 92, self.bounds.size.width - 110, 26)]; _methodNameField.borderStyle = UITextBorderStyleRoundedRect; _methodNameField.backgroundColor = [UIColor darkGrayColor]; _methodNameField.textColor = [UIColor whiteColor]; _methodNameField.font = [UIFont systemFontOfSize:12]; _methodNameField.placeholder = @"onDestroy"; _methodNameField.tag = 1013; _methodNameField.delegate = self; [self addSubview:_methodNameField];
+        _methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(70, 92, self.bounds.size.width - 85, 26)]; _methodNameField.borderStyle = UITextBorderStyleRoundedRect; _methodNameField.backgroundColor = [UIColor darkGrayColor]; _methodNameField.textColor = [UIColor whiteColor]; _methodNameField.font = [UIFont systemFontOfSize:12]; _methodNameField.placeholder = @"onDestroy"; _methodNameField.tag = 1013; _methodNameField.delegate = self; [self addSubview:_methodNameField];
 
         UIButton *addBtn = [UIButton buttonWithType:UIButtonTypeSystem]; addBtn.frame = CGRectMake(12, 126, 60, 30); [addBtn setTitle:@"添加" forState:UIControlStateNormal]; [addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; addBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; addBtn.tag = 1014; [addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:addBtn];
         UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem]; testBtn.frame = CGRectMake(80, 126, 60, 30); [testBtn setTitle:@"测试" forState:UIControlStateNormal]; [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal]; testBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; testBtn.tag = 1015; [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:testBtn];
@@ -349,11 +282,7 @@ static void applyCustomRules(void)
                 {
                     UIView *v = [views lastObject]; [views removeLastObject];
                     NSString *cn = NSStringFromClass([v class]);
-                    if ([cn isEqualToString:@"GDTSplashDLView"] || [cn isEqualToString:@"GDTSplashViewController"])
-                    {
-                        [v removeFromSuperview];
-                        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🧹 已移除 %@\n", cn]];
-                    }
+                    if ([cn isEqualToString:@"GDTSplashDLView"] || [cn isEqualToString:@"GDTSplashViewController"]) { [v removeFromSuperview]; [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🧹 已移除 %@\n", cn]]; }
                     if ([cn containsString:@"splash_ad"]) { w.hidden = YES; w.windowLevel = -1000; [w resignKeyWindow]; }
                     [views addObjectsFromArray:v.subviews];
                 }
@@ -367,8 +296,6 @@ static void applyAllSavedRules(void) { NSUserDefaults *ud = [NSUserDefaults stan
 
 static BOOL isSkipText(NSString *t) { if (!t || !t.length) return NO; for (NSString *k in @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip", @"Skip", @"Close", @"SKIP", @"CLOSE"]) if ([t rangeOfString:k options:NSCaseInsensitiveSearch].location != NSNotFound && t.length <= 15) return YES; return NO; }
 static UIView *findSkipLabelInView(UIView *rt) { if ([rt isKindOfClass:[AdInspectorPanel class]] || (rt.tag >= 1001 && rt.tag <= 1025)) return nil; NSString *ct = nil; if ([rt isKindOfClass:[UIButton class]]) ct = [(UIButton *)rt titleForState:UIControlStateNormal]; else if ([rt isKindOfClass:[UILabel class]]) ct = [(UILabel *)rt text] ?: [(UILabel *)rt attributedText].string; if (!ct) ct = rt.accessibilityLabel; if (isSkipText(ct)) return rt; for (UIView *sb in rt.subviews) { UIView *f = findSkipLabelInView(sb); if (f) return f; } return nil; }
-
-static void analyzeTouchView(UIView *v, CGPoint pt) { if (!v) return; UIView *av = findSkipLabelInView(v); if (!av) return; @try { NSMutableArray *ca = [NSMutableArray array]; UIView *cur = av; while (cur && ![cur isKindOfClass:[UIWindow class]]) { [ca addObject:NSStringFromClass([cur class])]; cur = cur.superview; } NSString *bt = nil; if ([av isKindOfClass:[UIButton class]]) bt = [(UIButton *)av titleForState:UIControlStateNormal]; else if ([av isKindOfClass:[UILabel class]]) bt = [(UILabel *)av text] ?: [(UILabel *)av attributedText].string; if (!bt.length) bt = av.accessibilityLabel; if (bt.length) { NSMutableDictionary *rule = [NSMutableDictionary dictionary]; rule[@"buttonClass"] = NSStringFromClass([av class]); rule[@"buttonTextPattern"] = bt; rule[@"hierarchyChain"] = ca; rule[@"triggerType"] = @"gesture"; saveRule(rule); } } @catch (NSException *e) {} }
 
 // ==================== Hook ====================
 %hook UIGestureRecognizer
@@ -394,7 +321,6 @@ static void analyzeTouchView(UIView *v, CGPoint pt) { if (!v) return; UIView *av
         NSSet *ts = [e allTouches];
         if (ts.count >= 2) { BOOL as = YES; for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } } if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date]; if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) { AdInspectorPanel *p = [AdInspectorPanel shared]; if (p.hidden) [p forceShow]; s_twoFingerStart = nil; s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5]; } }
         else s_twoFingerStart = nil;
-        if (ts.count == 1) { UITouch *t = [ts anyObject]; if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) analyzeTouchView(t.view, [t locationInView:nil]); }
     }
 }
 %end
