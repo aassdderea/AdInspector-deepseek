@@ -2,6 +2,11 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+// ==================== 单指下滑暂停广告 ====================
+static CGPoint s_panStartPoint;
+static BOOL s_isPanningDown = NO;
+static const CGFloat kSwipeDownThreshold = 80.0; // 下滑80像素触发暂停
+
 // ==================== Ivar 读取辅助函数 ====================
 static Ivar ATFindIvar(Class cls, const char *name) {
     for (Class current = cls; current; current = class_getSuperclass(current)) {
@@ -41,7 +46,61 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return allWindows;
 }
 
-// ==================== Flexing 窗口自动置顶 ====================
+// ==================== Flexing 窗口自动置顶 + 暂停广告 ====================
+static void pauseAnimationsInView(UIView *view) {
+    view.layer.speed = 0;
+    view.layer.timeOffset = [view.layer convertTime:CACurrentMediaTime() fromLayer:nil];
+    for (UIView *sub in view.subviews) {
+        pauseAnimationsInView(sub);
+    }
+}
+
+static void resumeAnimationsInView(UIView *view) {
+    view.layer.speed = 1.0;
+    view.layer.timeOffset = 0;
+    for (UIView *sub in view.subviews) {
+        resumeAnimationsInView(sub);
+    }
+}
+
+static UIView *findAdRootView(void) {
+    for (UIWindow *window in getAllWindows()) {
+        if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
+        UIView *adRoot = findAdRootInView(window);
+        if (adRoot) return adRoot;
+    }
+    return nil;
+}
+
+static UIView *findAdRootInView(UIView *view) {
+    NSString *cls = NSStringFromClass([view class]);
+    if ([cls containsString:@"GDTSplash"] || [cls containsString:@"CSJSplash"] || 
+        [cls containsString:@"GDTDLRoot"] || [cls containsString:@"SplashView"]) {
+        return view;
+    }
+    for (UIView *sub in view.subviews) {
+        UIView *found = findAdRootInView(sub);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void pauseAdAnimations(void) {
+    UIView *adRoot = findAdRootView();
+    if (adRoot) {
+        pauseAnimationsInView(adRoot);
+        showToast(@"⏸ 广告已暂停");
+    }
+}
+
+static void resumeAdAnimations(void) {
+    UIView *adRoot = findAdRootView();
+    if (adRoot) {
+        resumeAnimationsInView(adRoot);
+        showToast(@"▶ 广告已恢复");
+    }
+}
+
 static BOOL isFlexingAvailable(void) {
     NSArray *flexClassNames = @[
         @"FLEXWindow", @"FLEXExplorerWindow", @"FLEXManagerWindow", @"FLEXOverlayWindow"
@@ -180,8 +239,8 @@ static AdInspectorWindow *s_floatWindow = nil;
         self.layer.borderColor = [UIColor cyanColor].CGColor;
         self.userInteractionEnabled = YES; self.clipsToBounds = NO; self.hidden = YES;
 
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 20)];
-        title.text = @"🔍 AdInspector"; title.textColor = [UIColor cyanColor];
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 240, 20)];
+        title.text = @"🔍 AdInspector | 下滑暂停广告"; title.textColor = [UIColor cyanColor];
         title.font = [UIFont boldSystemFontOfSize:12]; title.tag = 1001;
         [self addSubview:title];
 
@@ -486,6 +545,27 @@ static void forceRemoveAdView(UIView *view) {
     }
 }
 
+// ==================== 调用onDestroy关闭广告 ====================
+static BOOL callOnDestroy(UIView *view) {
+    // 找到GDTDLRootView
+    UIView *rootView = view;
+    while (rootView && ![NSStringFromClass([rootView class]) isEqualToString:@"GDTDLRootView"]) {
+        rootView = [rootView superview];
+    }
+    if (!rootView) return NO;
+    
+    // 获取delegate（GDTDLBusinessManager）
+    id delegate = [rootView valueForKey:@"delegate"];
+    if (!delegate) return NO;
+    
+    // 调用onDestroy
+    if ([delegate respondsToSelector:NSSelectorFromString(@"onDestroy")]) {
+        ((void (*)(id, SEL))objc_msgSend)(delegate, NSSelectorFromString(@"onDestroy"));
+        return YES;
+    }
+    return NO;
+}
+
 // ==================== 跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
@@ -494,11 +574,8 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
     }
 
     NSString *triggerType = rule[@"triggerType"];
-    NSString *gestureClass = rule[@"gestureClass"];
-    NSString *targetClass = rule[@"targetClass"];
-    NSString *actionStr = rule[@"actionSelector"];
-    NSString *gestureViewClass = rule[@"gestureViewClass"];
 
+    // UIControl事件
     if ([triggerType isEqualToString:@"controlEvent"]) {
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
@@ -510,64 +587,15 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    if ([triggerType isEqualToString:@"gesture"] && gestureClass) {
-        UIView *gestureHost = view;
-        if (gestureViewClass) {
-            UIView *cur = view;
-            while (cur && ![NSStringFromClass([cur class]) isEqualToString:gestureViewClass]) cur = cur.superview;
-            if (cur) gestureHost = cur;
-        }
-        UIView *cur = gestureHost;
-        while (cur) {
-            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
-                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
-                    BOOL triggered = NO;
-                    if (targetClass && actionStr && ![targetClass isEqualToString:@"-"] && ![actionStr isEqualToString:@"-"]) {
-                        SEL action = NSSelectorFromString(actionStr);
-                        id target = cur;
-                        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) target = [target nextResponder];
-                        if (target && [target respondsToSelector:action]) { ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr); triggered = YES; }
-                    }
-                    if (!triggered) {
-                        id targets = ATGetObjectIvar(gr, "_targets");
-                        if (targets && [targets isKindOfClass:[NSArray class]]) {
-                            for (id t in targets) {
-                                id target = ATGetObjectIvar(t, "_target");
-                                SEL action = ATGetSelectorIvar(t, "_action");
-                                if (target && action && [target respondsToSelector:action]) { ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr); triggered = YES; }
-                            }
-                        }
-                    }
-                    if (!triggered) {
-                        @try {
-                            NSArray *tgts = [gr valueForKey:@"_targets"];
-                            if (tgts && [tgts isKindOfClass:[NSArray class]]) {
-                                for (id t in tgts) {
-                                    id target = [t valueForKey:@"_target"];
-                                    id actionObj = [t valueForKey:@"_action"];
-                                    SEL action = NULL;
-                                    if ([actionObj isKindOfClass:[NSString class]]) action = NSSelectorFromString(actionObj);
-                                    else if ([actionObj isKindOfClass:[NSValue class]]) action = (SEL)[actionObj pointerValue];
-                                    if (target && action && [target respondsToSelector:action]) { ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr); triggered = YES; }
-                                }
-                            }
-                        } @catch (NSException *e) {}
-                    }
-                    if (!triggered) { @try { [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"]; triggered = YES; } @catch (NSException *e) {} }
-                    if (!triggered && [view isKindOfClass:[UIControl class]]) { [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside]; triggered = YES; }
-                    if (triggered) {
-                        showToast(@"⏩ 已自动跳过");
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                            if (view && !view.hidden && view.superview) forceRemoveAdView(view);
-                        });
-                        return;
-                    }
-                }
-            }
-            cur = cur.superview;
+    // 手势类型：先尝试onDestroy，失败则强制移除
+    if ([triggerType isEqualToString:@"gesture"]) {
+        if (callOnDestroy(view)) {
+            showToast(@"⏩ 已调用onDestroy关闭广告");
+            return;
         }
     }
 
+    // 兜底：强制移除
     forceRemoveAdView(view);
     showToast(@"⏩ 已强制关闭广告");
 }
@@ -766,6 +794,32 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     %orig;
     if (event.type == UIEventTypeTouches) {
         NSSet *touches = [event allTouches];
+        UITouch *touch = [touches anyObject];
+        CGPoint currentPoint = [touch locationInView:nil];
+
+        // 单指下滑检测
+        if (touches.count == 1) {
+            if (touch.phase == UITouchPhaseBegan) {
+                s_panStartPoint = currentPoint;
+                s_isPanningDown = NO;
+            } else if (touch.phase == UITouchPhaseMoved) {
+                CGFloat deltaY = currentPoint.y - s_panStartPoint.y;
+                if (deltaY > kSwipeDownThreshold && !s_isPanningDown) {
+                    s_isPanningDown = YES;
+                    pauseAdAnimations();
+                }
+            } else if (touch.phase == UITouchPhaseEnded) {
+                if (s_isPanningDown) {
+                    s_isPanningDown = NO;
+                } else if (touch.view && !s_twoFingerStart) {
+                    if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) {
+                        analyzeTouchView(touch.view, [touch locationInView:nil]);
+                    }
+                }
+            }
+        }
+
+        // 双指长按呼出面板
         if (touches.count >= 2) {
             BOOL allStationary = YES;
             for (UITouch *t in touches) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { allStationary = NO; break; } }
@@ -776,14 +830,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                 s_twoFingerStart = nil; s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
             }
         } else { s_twoFingerStart = nil; }
-
-        if (touches.count == 1) {
-            UITouch *touch = [touches anyObject];
-            if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
-                if (s_ignoreSingleTouchUntil && [[NSDate date] compare:s_ignoreSingleTouchUntil] == NSOrderedAscending) return;
-                analyzeTouchView(touch.view, [touch locationInView:nil]);
-            }
-        }
     }
 }
 %end
@@ -814,7 +860,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow.panel = panel; s_floatWindow.hidden = NO;
         }
 
-        showToast(@"🔍 已激活 | Flexing自动置顶 | 双指呼面板");
+        showToast(@"🔍 已激活 | 下滑暂停广告 | Flexing自动置顶");
         if (isFlexingAvailable()) raiseFlexingWindow();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
