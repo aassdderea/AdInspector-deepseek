@@ -660,7 +660,10 @@ static void applyCustomRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *cr = [ud arrayForKey:kCustomRulesKey];
-    if (!cr.count) return;
+    if (!cr.count) {
+        showToast(@"⚠️ 没有自定义规则");
+        return;
+    }
     
     for (NSDictionary *r in cr)
     {
@@ -668,116 +671,93 @@ static void applyCustomRules(void)
         NSString *kp = r[@"keyPath"];
         NSString *mn = r[@"methodName"];
         if (!tvc || !kp || !mn) continue;
-
+        
+        // 解析：GDTfunctionu0H2Y8:,3 → 方法名:GDTfunctionu0H2Y8:  参数:3
+        //       onDestroy → 方法名:onDestroy  无参数
+        NSString *actualMethod = mn;
+        NSString *paramStr = nil;
+        NSRange commaRange = [mn rangeOfString:@","];
+        if (commaRange.location != NSNotFound) {
+            actualMethod = [mn substringToIndex:commaRange.location];
+            paramStr = [mn substringFromIndex:commaRange.location + 1];
+        }
+        
+        // 查找目标对象
         BOOL found = NO;
         id tg = nil;
-
-        for (UIWindow *w in getAllWindows())
-        {
+        for (UIWindow *w in getAllWindows()) {
             if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
             UIView *tv = findViewOfClass(w, tvc);
-            if (tv)
-            {
+            if (tv) {
                 tg = getObjectByKeyPath(tv, kp);
                 if (tg) { found = YES; break; }
             }
         }
-
-        if (!found)
-        {
+        
+        if (!found) {
             Class targetClass = NSClassFromString(tvc);
-            if (targetClass)
-            {
-                SEL sharedSelectors[] = { @selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager), @selector(instance) };
-                for (int i = 0; i < 5 && !tg; i++)
-                {
-                    if ([targetClass respondsToSelector:sharedSelectors[i]])
-                        tg = ((id (*)(id, SEL))objc_msgSend)(targetClass, sharedSelectors[i]);
+            if (targetClass) {
+                SEL ss[] = {@selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager), @selector(instance)};
+                for (int i = 0; i < 5 && !tg; i++) {
+                    if ([targetClass respondsToSelector:ss[i]]) tg = ((id(*)(id,SEL))objc_msgSend)(targetClass, ss[i]);
                 }
-                if (!tg)
-                {
-                    for (UIWindow *w in getAllWindows())
-                    {
-                        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-                        NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
-                        while (views.count > 0)
-                        {
-                            UIView *v = [views lastObject];
-                            [views removeLastObject];
-                            if ([v respondsToSelector:@selector(delegate)])
-                            {
-                                id delegate = ((id (*)(id, SEL))objc_msgSend)(v, @selector(delegate));
-                                if ([delegate isKindOfClass:targetClass]) { tg = delegate; break; }
-                            }
-                            id responder = v.nextResponder;
-                            while (responder)
-                            {
-                                if ([responder isKindOfClass:targetClass]) { tg = responder; break; }
-                                responder = [responder nextResponder];
-                            }
-                            if (tg) break;
-                            [views addObjectsFromArray:v.subviews];
-                        }
-                        if (tg) break;
-                    }
-                }
-                if (!tg)
-                {
-                    id appDelegate = [UIApplication sharedApplication].delegate;
-                    @try { tg = [appDelegate valueForKey:tvc]; } @catch (NSException *e) {}
+                if (!tg) {
+                    id ad = [UIApplication sharedApplication].delegate;
+                    @try { tg = [ad valueForKey:tvc]; } @catch(NSException *e) {}
                 }
             }
         }
-
-        if ([kp isEqualToString:@"self"] && !tg)
-        {
-            Class targetClass = NSClassFromString(tvc);
-            if (targetClass)
-            {
-                id appDelegate = [UIApplication sharedApplication].delegate;
-                @try { tg = [appDelegate valueForKey:tvc]; } @catch (NSException *e) {}
-            }
-        }
-        else if (tg)
-        {
-            tg = getObjectByKeyPath(tg, kp);
-        }
-
-        if (!tg)
-        {
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ 未找到 %@ 实例\n", tvc]];
+        if ([kp isEqualToString:@"self"] && !tg) {
+            Class tc = NSClassFromString(tvc);
+            if (tc) { id ad = [UIApplication sharedApplication].delegate; @try { tg = [ad valueForKey:tvc]; } @catch(NSException *e) {} }
+        } else if (tg) { tg = getObjectByKeyPath(tg, kp); }
+        
+        if (!tg) {
+            showToast([NSString stringWithFormat:@"❌ 未找到 %@", tvc]);
             continue;
         }
-
-        SEL m = NSSelectorFromString(mn);
-        if (![tg respondsToSelector:m])
-        {
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ %@ 不响应 %@\n", NSStringFromClass([tg class]), mn]];
+        
+        SEL m = NSSelectorFromString(actualMethod);
+        if (![tg respondsToSelector:m]) {
+            showToast([NSString stringWithFormat:@"❌ %@ 无 %@", tvc, actualMethod]);
             continue;
         }
-
+        
+        // 执行
         NSMethodSignature *sig = [tg methodSignatureForSelector:m];
-        NSUInteger argCount = sig.numberOfArguments;
-
-        if (argCount <= 2)
-        {
-            ((void (*)(id, SEL))objc_msgSend)(tg, m);
-        }
-        else
-        {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:tg];
-            [inv setSelector:m];
-            id nilArg = nil;
-            for (NSUInteger i = 2; i < argCount; i++)
-            {
-                [inv setArgument:&nilArg atIndex:i];
+        NSUInteger ac = sig.numberOfArguments;
+        
+        if (ac <= 2) {
+            ((void(*)(id,SEL))objc_msgSend)(tg, m);
+            showToast([NSString stringWithFormat:@"✅ %@ (无参)", actualMethod]);
+        } else if (ac == 3 && paramStr) {
+            const char *type = [sig getArgumentTypeAtIndex:2];
+            if (strcmp(type,"q")==0 || strcmp(type,"i")==0 || strcmp(type,"Q")==0) {
+                NSInteger val = [paramStr integerValue];
+                ((void(*)(id,SEL,NSInteger))objc_msgSend)(tg, m, val);
+                showToast([NSString stringWithFormat:@"✅ %@(%ld)", actualMethod, (long)val]);
+            } else if (strcmp(type,"B")==0) {
+                ((void(*)(id,SEL,BOOL))objc_msgSend)(tg, m, [paramStr boolValue]);
+                showToast([NSString stringWithFormat:@"✅ %@(%d)", actualMethod, [paramStr boolValue]]);
+            } else if (strcmp(type,"d")==0) {
+                ((void(*)(id,SEL,double))objc_msgSend)(tg, m, [paramStr doubleValue]);
+                showToast([NSString stringWithFormat:@"✅ %@(%.1f)", actualMethod, [paramStr doubleValue]]);
+            } else {
+                ((void(*)(id,SEL,id))objc_msgSend)(tg, m, paramStr);
+                showToast([NSString stringWithFormat:@"✅ %@(@)", actualMethod]);
             }
+        } else if (ac == 3 && !paramStr) {
+            ((void(*)(id,SEL,id))objc_msgSend)(tg, m, nil);
+            showToast([NSString stringWithFormat:@"⚠️ %@(nil) 缺参数", actualMethod]);
+        } else {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setTarget:tg]; [inv setSelector:m];
+            id nilArg = nil;
+            for (NSUInteger i = 2; i < ac; i++) [inv setArgument:&nilArg atIndex:i];
             [inv invoke];
+            showToast([NSString stringWithFormat:@"✅ %@ (多参nil)", actualMethod]);
         }
-        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"✅ 已执行: %@.%@", NSStringFromClass([tg class]), mn]];
     }
-    showToast(@"✅ 自定义规则已执行");
 }
 
 static void applyAllSavedRules(void)
