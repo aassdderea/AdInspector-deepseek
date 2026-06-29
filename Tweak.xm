@@ -46,10 +46,6 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return allWindows;
 }
 
-// ==================== 前置声明 ====================
-@class AdInspectorWindow;
-static void showToast(NSString *message);
-
 // ==================== Flexing 窗口自动置顶 + 暂停广告 ====================
 static void pauseAnimationsInView(UIView *view) {
     view.layer.speed = 0;
@@ -74,7 +70,8 @@ static UIView *findAdRootInView(UIView *view) {
 
 static UIView *findAdRootView(void) {
     for (UIWindow *window in getAllWindows()) {
-        if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
+        // 跳过插件自身窗口（字符串比较避免前向声明问题）
+        if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
         UIView *adRoot = findAdRootInView(window);
         if (adRoot) return adRoot;
     }
@@ -85,7 +82,8 @@ static void pauseAdAnimations(void) {
     UIView *adRoot = findAdRootView();
     if (adRoot) {
         pauseAnimationsInView(adRoot);
-        showToast(@"⏸ 广告已暂停");
+        // Toast在AdInspectorPanel定义之后才能调用，这里用NSLog替代
+        NSLog(@"[AdInspector] ⏸ 广告已暂停");
     }
 }
 
@@ -118,7 +116,7 @@ static void raiseFlexingWindow(void) {
     }
 }
 
-// ==================== 前置声明 ====================
+// ==================== 前置声明（全部函数） ====================
 static NSString *getControlEventName(UIControlEvents event);
 static void saveToFile(NSString *log);
 static void analyzeTouchView(UIView *view, CGPoint touchPoint);
@@ -128,6 +126,7 @@ static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
+static void showToast(NSString *message);
 static UIWindow *getKeyWindow(void);
 static UIView *findSkipLabelInView(UIView *root);
 static void forceRemoveAdView(UIView *view);
@@ -451,7 +450,7 @@ static void saveRule(NSDictionary *rule) {
 
 static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
     if ([root isKindOfClass:[AdInspectorPanel class]] || 
-        [root.window isKindOfClass:[AdInspectorWindow class]]) {
+        [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"]) {
         return nil;
     }
     NSString *targetClass = rule[@"buttonClass"];
@@ -526,7 +525,7 @@ static void forceRemoveAdView(UIView *view) {
     }
     
     UIWindow *adWindow = view.window;
-    if (adWindow && ![adWindow isKindOfClass:[AdInspectorWindow class]]) {
+    if (adWindow && ![NSStringFromClass([adWindow class]) isEqualToString:@"AdInspectorWindow"]) {
         adWindow.hidden = YES;
         showToast(@"⏩ 已强制关闭广告窗口");
     }
@@ -551,7 +550,7 @@ static BOOL callOnDestroy(UIView *view) {
 // ==================== 跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
-        [view.window isKindOfClass:[AdInspectorWindow class]]) {
+        [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) {
         return;
     }
 
@@ -587,7 +586,7 @@ static void applyAllSavedRules(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in [(UIWindowScene *)scene windows]) {
-            if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
+            if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
             for (NSDictionary *rule in rules) {
                 UIView *matched = findMatchingView(window, rule);
                 if (matched && !matched.hidden && matched.alpha > 0) { triggerSkip(matched, rule); return; }
@@ -620,7 +619,8 @@ static UIView *findSkipLabelInView(UIView *root) {
 // ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
-    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [view.window isKindOfClass:[AdInspectorWindow class]]) return;
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] || 
+        [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) return;
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
     s_lastAnalysisTime = now;
