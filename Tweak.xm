@@ -419,32 +419,54 @@ static void applyCustomRules(void)
             if (strcmp(type,"q")==0 || strcmp(type,"i")==0 || strcmp(type,"Q")==0) {
                 NSInteger val = [paramStr integerValue];
                 
-                // 先触发触摸开始
-                if ([tg respondsToSelector:@selector(GDTfunctionm80Ge8:beganWithTouches:andEvent:)]) {
-                    ((void(*)(id,SEL,id,id,id))objc_msgSend)(tg, @selector(GDTfunctionm80Ge8:beganWithTouches:andEvent:), nil, nil, nil);
+                // 查找跳过按钮的父视图来触发手势
+                UIView *skipLabel = findSkipLabelInView(tg);
+                UIView *targetView = skipLabel ?: tg;
+                
+                // 遍历手势识别器，找到 GDTSystemGestureRecognizer 并触发
+                BOOL gestureTriggered = NO;
+                for (UIGestureRecognizer *gr in targetView.gestureRecognizers) {
+                    if ([NSStringFromClass([gr class]) containsString:@"GDTSystem"]) {
+                        // 模拟手势状态变化：Began → Ended
+                        [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                        });
+                        gestureTriggered = YES;
+                        break;
+                    }
                 }
                 
-                // 延迟触发跳过
+                // 也遍历父视图的手势
+                if (!gestureTriggered) {
+                    UIView *parent = targetView.superview;
+                    for (int i = 0; i < 5 && parent && !gestureTriggered; i++) {
+                        for (UIGestureRecognizer *gr in parent.gestureRecognizers) {
+                            if ([NSStringFromClass([gr class]) containsString:@"GDTSystem"]) {
+                                [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
+                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                    [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                                });
+                                gestureTriggered = YES;
+                                break;
+                            }
+                        }
+                        parent = parent.superview;
+                    }
+                }
+                
+                // 同时直接调用跳过方法
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     ((void(*)(id,SEL,NSInteger))objc_msgSend)(tg, m, val);
                 });
                 
-                // 延迟触发销毁
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    id responder = tg;
-                    while (responder) {
-                        if ([responder isKindOfClass:NSClassFromString(@"GDTDLBusinessManager")]) {
-                            if ([responder respondsToSelector:@selector(onDestroy)]) {
-                                ((void(*)(id,SEL))objc_msgSend)(responder, @selector(onDestroy));
-                            }
-                            break;
-                        }
-                        responder = [responder nextResponder];
-                    }
-                });
-                
-                logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%ld +完整跳过流程 已执行", NSStringFromClass([tg class]), actualMethod, (long)val];
-                showToast([NSString stringWithFormat:@"✅ %@(%ld)+流程", actualMethod, (long)val]);
+                if (gestureTriggered) {
+                    logMsg = [NSString stringWithFormat:@"✅ %@.%@ 手势触发+参数:%ld 已执行", NSStringFromClass([tg class]), actualMethod, (long)val];
+                    showToast([NSString stringWithFormat:@"✅ 手势+%@(%ld)", actualMethod, (long)val]);
+                } else {
+                    logMsg = [NSString stringWithFormat:@"⚠️ %@.%@ 参数:%ld 已执行(未找到手势)", NSStringFromClass([tg class]), actualMethod, (long)val];
+                    showToast([NSString stringWithFormat:@"⚠️ %@(%ld)无手势", actualMethod, (long)val]);
+                }
 
             } else if (strcmp(type,"B")==0) {
                 BOOL val = [paramStr boolValue];
