@@ -5,7 +5,7 @@
 // ==================== 单指下滑暂停广告 ====================
 static CGPoint s_panStartPoint;
 static BOOL s_isPanningDown = NO;
-static const CGFloat kSwipeDownThreshold = 80.0; // 下滑80像素触发暂停
+static const CGFloat kSwipeDownThreshold = 80.0;
 
 // ==================== Ivar 读取辅助函数 ====================
 static Ivar ATFindIvar(Class cls, const char *name) {
@@ -46,6 +46,10 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return allWindows;
 }
 
+// ==================== 前置声明 ====================
+@class AdInspectorWindow;
+static void showToast(NSString *message);
+
 // ==================== Flexing 窗口自动置顶 + 暂停广告 ====================
 static void pauseAnimationsInView(UIView *view) {
     view.layer.speed = 0;
@@ -53,23 +57,6 @@ static void pauseAnimationsInView(UIView *view) {
     for (UIView *sub in view.subviews) {
         pauseAnimationsInView(sub);
     }
-}
-
-static void resumeAnimationsInView(UIView *view) {
-    view.layer.speed = 1.0;
-    view.layer.timeOffset = 0;
-    for (UIView *sub in view.subviews) {
-        resumeAnimationsInView(sub);
-    }
-}
-
-static UIView *findAdRootView(void) {
-    for (UIWindow *window in getAllWindows()) {
-        if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
-        UIView *adRoot = findAdRootInView(window);
-        if (adRoot) return adRoot;
-    }
-    return nil;
 }
 
 static UIView *findAdRootInView(UIView *view) {
@@ -85,19 +72,20 @@ static UIView *findAdRootInView(UIView *view) {
     return nil;
 }
 
+static UIView *findAdRootView(void) {
+    for (UIWindow *window in getAllWindows()) {
+        if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
+        UIView *adRoot = findAdRootInView(window);
+        if (adRoot) return adRoot;
+    }
+    return nil;
+}
+
 static void pauseAdAnimations(void) {
     UIView *adRoot = findAdRootView();
     if (adRoot) {
         pauseAnimationsInView(adRoot);
         showToast(@"⏸ 广告已暂停");
-    }
-}
-
-static void resumeAdAnimations(void) {
-    UIView *adRoot = findAdRootView();
-    if (adRoot) {
-        resumeAnimationsInView(adRoot);
-        showToast(@"▶ 广告已恢复");
     }
 }
 
@@ -140,7 +128,6 @@ static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
-static void showToast(NSString *message);
 static UIWindow *getKeyWindow(void);
 static UIView *findSkipLabelInView(UIView *root);
 static void forceRemoveAdView(UIView *view);
@@ -547,18 +534,13 @@ static void forceRemoveAdView(UIView *view) {
 
 // ==================== 调用onDestroy关闭广告 ====================
 static BOOL callOnDestroy(UIView *view) {
-    // 找到GDTDLRootView
     UIView *rootView = view;
     while (rootView && ![NSStringFromClass([rootView class]) isEqualToString:@"GDTDLRootView"]) {
         rootView = [rootView superview];
     }
     if (!rootView) return NO;
-    
-    // 获取delegate（GDTDLBusinessManager）
     id delegate = [rootView valueForKey:@"delegate"];
     if (!delegate) return NO;
-    
-    // 调用onDestroy
     if ([delegate respondsToSelector:NSSelectorFromString(@"onDestroy")]) {
         ((void (*)(id, SEL))objc_msgSend)(delegate, NSSelectorFromString(@"onDestroy"));
         return YES;
@@ -575,7 +557,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
 
     NSString *triggerType = rule[@"triggerType"];
 
-    // UIControl事件
     if ([triggerType isEqualToString:@"controlEvent"]) {
         if ([view isKindOfClass:[UIControl class]]) {
             [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
@@ -587,7 +568,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 手势类型：先尝试onDestroy，失败则强制移除
     if ([triggerType isEqualToString:@"gesture"]) {
         if (callOnDestroy(view)) {
             showToast(@"⏩ 已调用onDestroy关闭广告");
@@ -595,7 +575,6 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         }
     }
 
-    // 兜底：强制移除
     forceRemoveAdView(view);
     showToast(@"⏩ 已强制关闭广告");
 }
@@ -638,7 +617,7 @@ static UIView *findSkipLabelInView(UIView *root) {
     return nil;
 }
 
-// ==================== 核心分析（学习，含Ivar提取） ====================
+// ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
     if ([view isDescendantOfView:[AdInspectorPanel shared]] || [view.window isKindOfClass:[AdInspectorWindow class]]) return;
@@ -797,7 +776,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         UITouch *touch = [touches anyObject];
         CGPoint currentPoint = [touch locationInView:nil];
 
-        // 单指下滑检测
         if (touches.count == 1) {
             if (touch.phase == UITouchPhaseBegan) {
                 s_panStartPoint = currentPoint;
@@ -819,7 +797,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             }
         }
 
-        // 双指长按呼出面板
         if (touches.count >= 2) {
             BOOL allStationary = YES;
             for (UITouch *t in touches) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { allStationary = NO; break; } }
