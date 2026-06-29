@@ -557,23 +557,42 @@ static UIView *findViewOfClass(UIView *root, NSString *className) {
     return nil;
 }
 
+// ==================== 应用自定义规则（增强版） ====================
 static void applyCustomRules(void) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     NSArray *customRules = [ud arrayForKey:kCustomRulesKey];
-    if (!customRules.count) return;
-    for (NSDictionary *rule in customRules) {
-        NSString *targetViewClass = rule[@"targetView"];
-        NSString *keyPath = rule[@"keyPath"];
-        NSString *methodName = rule[@"methodName"];
-        if (!targetViewClass || !keyPath || !methodName) continue;
-        for (UIWindow *window in getAllWindows()) {
-            if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
-            UIView *targetView = findViewOfClass(window, targetViewClass);
-            if (targetView) {
-                id target = getObjectByKeyPath(targetView, keyPath);
-                if (target) {
-                    SEL method = NSSelectorFromString(methodName);
-                    if ([target respondsToSelector:method]) {
+    
+    // 无论有没有自定义规则，都先执行强制移除广告容器（最可靠）
+    BOOL removed = NO;
+    for (UIWindow *window in getAllWindows()) {
+        if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
+        // 强制移除已知广告容器
+        NSArray *adClassNames = @[@"GDTSplashDLView", @"CSJSplashView", @"GDTDLRootView"];
+        for (NSString *className in adClassNames) {
+            UIView *adView = findViewOfClass(window, className);
+            if (adView && adView.superview) {
+                [adView removeFromSuperview];
+                removed = YES;
+                break;
+            }
+        }
+        if (removed) break;
+    }
+    
+    // 执行自定义规则（onDestroy/pauseTimer等）
+    if (customRules.count > 0) {
+        for (NSDictionary *rule in customRules) {
+            NSString *targetViewClass = rule[@"targetView"];
+            NSString *keyPath = rule[@"keyPath"];
+            NSString *methodName = rule[@"methodName"];
+            if (!targetViewClass || !keyPath || !methodName) continue;
+            for (UIWindow *window in getAllWindows()) {
+                if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                UIView *targetView = findViewOfClass(window, targetViewClass);
+                if (targetView) {
+                    id target = getObjectByKeyPath(targetView, keyPath);
+                    if (target && [target respondsToSelector:NSSelectorFromString(methodName)]) {
+                        SEL method = NSSelectorFromString(methodName);
                         NSMethodSignature *sig = [target methodSignatureForSelector:method];
                         if (sig.numberOfArguments <= 2) { ((void (*)(id, SEL))objc_msgSend)(target, method); }
                         else { ((void (*)(id, SEL, id))objc_msgSend)(target, method, nil); }
@@ -582,7 +601,10 @@ static void applyCustomRules(void) {
             }
         }
     }
-    showToast(@"✅ 自定义规则已执行");
+    
+    if (removed) {
+        showToast(@"⏩ 广告已移除");
+    }
 }
 
 // ==================== 强制移除广告视图 ====================
