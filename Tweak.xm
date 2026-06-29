@@ -126,18 +126,6 @@ static void raiseFlexingWindow(void)
 }
 
 // ==================== 方法追踪 ====================
-static void startTracking(void)
-{
-    s_trackedMethods = [NSMutableArray array];
-    s_isTracking = YES;
-    s_trackStartTime = [NSDate date];
-}
-
-static void stopTracking(void)
-{
-    s_isTracking = NO;
-}
-
 static void recordMethodCall(NSString *name)
 {
     if (!s_isTracking && !s_isDeepTracking)
@@ -182,27 +170,73 @@ static void recordMethodCall(NSString *name)
     }
 }
 
+// ==================== Hook 类所有方法（必须在 startDeepTracking 之前） ====================
+static void hookAllMethodsOfClass(Class cls)
+{
+    if (!cls)
+    {
+        return;
+    }
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int i = 0; i < methodCount; i++)
+    {
+        SEL sel = method_getName(methods[i]);
+        NSString *methodName = NSStringFromSelector(sel);
+        if ([methodName hasPrefix:@"."] ||
+            [methodName hasPrefix:@"init"] ||
+            [methodName isEqualToString:@"dealloc"] ||
+            [methodName isEqualToString:@"class"] ||
+            [methodName isEqualToString:@"hash"] ||
+            [methodName isEqualToString:@"isEqual:"] ||
+            [methodName isEqualToString:@"self"] ||
+            [methodName isEqualToString:@"performSelector:"] ||
+            [methodName isEqualToString:@"respondsToSelector:"] ||
+            [methodName isEqualToString:@"methodSignatureForSelector:"] ||
+            [methodName isEqualToString:@"forwardInvocation:"] ||
+            [methodName isEqualToString:@"doesNotRecognizeSelector:"])
+        {
+            continue;
+        }
+        const char *typeEncoding = method_getTypeEncoding(methods[i]);
+        if (typeEncoding && typeEncoding[0] == 'v')
+        {
+            IMP originalIMP = method_getImplementation(methods[i]);
+            id newBlock = ^(id self) {
+                if (originalIMP)
+                {
+                    ((void (*)(id, SEL))originalIMP)(self, sel);
+                }
+                recordMethodCall(methodName);
+            };
+            IMP newIMP = imp_implementationWithBlock(newBlock);
+            method_setImplementation(methods[i], newIMP);
+        }
+    }
+    free(methods);
+}
+
+static void startTracking(void)
+{
+    s_trackedMethods = [NSMutableArray array];
+    s_isTracking = YES;
+    s_trackStartTime = [NSDate date];
+}
+
+static void stopTracking(void)
+{
+    s_isTracking = NO;
+}
+
 static void startDeepTracking(void)
 {
     s_deepTrackedMethods = [NSMutableArray array];
     s_isDeepTracking = YES;
     s_deepTrackStartTime = [NSDate date];
 
-    Class bmClass = NSClassFromString(@"GDTDLBusinessManager");
-    if (bmClass)
-    {
-        hookAllMethodsOfClass(bmClass);
-    }
-    Class rootViewClass = NSClassFromString(@"GDTDLRootView");
-    if (rootViewClass)
-    {
-        hookAllMethodsOfClass(rootViewClass);
-    }
-    Class splashClass = NSClassFromString(@"GDTSplashDLView");
-    if (splashClass)
-    {
-        hookAllMethodsOfClass(splashClass);
-    }
+    hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
+    hookAllMethodsOfClass(NSClassFromString(@"GDTDLRootView"));
+    hookAllMethodsOfClass(NSClassFromString(@"GDTSplashDLView"));
 }
 
 static NSArray *stopDeepTracking(void)
@@ -321,11 +355,6 @@ static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
-static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti);
-static NSString *getCallStackSymbols(void);
-static void startDeepTracking(void);
-static NSArray *stopDeepTracking(void);
-static void hookAllMethodsOfClass(Class cls);
 
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
@@ -1616,48 +1645,6 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
 }
 %end
 
-// ==================== Hook GDTDLBusinessManager 全部方法 ====================
-static void hookAllMethodsOfClass(Class cls)
-{
-    unsigned int methodCount = 0;
-    Method *methods = class_copyMethodList(cls, &methodCount);
-    for (unsigned int i = 0; i < methodCount; i++)
-    {
-        SEL sel = method_getName(methods[i]);
-        NSString *methodName = NSStringFromSelector(sel);
-        if ([methodName hasPrefix:@"."] ||
-            [methodName hasPrefix:@"init"] ||
-            [methodName isEqualToString:@"dealloc"] ||
-            [methodName isEqualToString:@"class"] ||
-            [methodName isEqualToString:@"hash"] ||
-            [methodName isEqualToString:@"isEqual:"] ||
-            [methodName isEqualToString:@"self"] ||
-            [methodName isEqualToString:@"performSelector:"] ||
-            [methodName isEqualToString:@"respondsToSelector:"] ||
-            [methodName isEqualToString:@"methodSignatureForSelector:"] ||
-            [methodName isEqualToString:@"forwardInvocation:"] ||
-            [methodName isEqualToString:@"doesNotRecognizeSelector:"])
-        {
-            continue;
-        }
-        const char *typeEncoding = method_getTypeEncoding(methods[i]);
-        if (typeEncoding && typeEncoding[0] == 'v')
-        {
-            IMP originalIMP = method_getImplementation(methods[i]);
-            id newBlock = ^(id self) {
-                if (originalIMP)
-                {
-                    ((void (*)(id, SEL))originalIMP)(self, sel);
-                }
-                recordMethodCall(methodName);
-            };
-            IMP newIMP = imp_implementationWithBlock(newBlock);
-            method_setImplementation(methods[i], newIMP);
-        }
-    }
-    free(methods);
-}
-
 // ==================== Hook ====================
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e
@@ -1744,23 +1731,7 @@ static void hookAllMethodsOfClass(Class cls)
             s_floatWindow.hidden = NO;
         }
 
-        Class bmClass = NSClassFromString(@"GDTDLBusinessManager");
-        if (bmClass)
-        {
-            hookAllMethodsOfClass(bmClass);
-            NSLog(@"[AdInspector] ✅ 已 Hook GDTDLBusinessManager 全部方法");
-        }
-        else
-        {
-            NSLog(@"[AdInspector] ⚠️ GDTDLBusinessManager 类未找到，延迟重试");
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                Class bmClass2 = NSClassFromString(@"GDTDLBusinessManager");
-                if (bmClass2)
-                {
-                    hookAllMethodsOfClass(bmClass2);
-                }
-            });
-        }
+        hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
 
         showToast(@"🔍 已激活 | 双指呼面板 | 深度追踪");
         if (isFlexingAvailable())
