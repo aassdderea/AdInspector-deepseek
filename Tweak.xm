@@ -4,7 +4,7 @@
 
 // ==================== 单指长按呼出Flexing ====================
 static NSDate *s_singleFingerStart = nil;
-static const NSTimeInterval kSingleFingerHoldDuration = 1.0; // 长按1秒呼出Flexing
+static const NSTimeInterval kSingleFingerHoldDuration = 1.0;
 
 // ==================== Ivar 读取辅助函数 ====================
 static Ivar ATFindIvar(Class cls, const char *name) {
@@ -45,7 +45,15 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return allWindows;
 }
 
-// ==================== Flexing 窗口置顶 ====================
+// ==================== Flexing 窗口置顶 + 暂停广告动画 ====================
+static void pauseAnimationsInView(UIView *view) {
+    view.layer.speed = 0;
+    view.layer.timeOffset = [view.layer convertTime:CACurrentMediaTime() fromLayer:nil];
+    for (UIView *sub in view.subviews) {
+        pauseAnimationsInView(sub);
+    }
+}
+
 static void raiseFlexingWindow(void) {
     NSArray *flexClassNames = @[
         @"FLEXWindow",
@@ -61,6 +69,13 @@ static void raiseFlexingWindow(void) {
                 window.hidden = NO;
                 window.alpha = 1.0;
                 [window makeKeyAndVisible];
+                
+                // 暂停所有其他窗口的动画（让广告倒计时停止）
+                for (UIWindow *w in getAllWindows()) {
+                    if (w != window && ![w isKindOfClass:[AdInspectorWindow class]]) {
+                        pauseAnimationsInView(w);
+                    }
+                }
                 return;
             }
         }
@@ -778,7 +793,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             if (touch.phase == UITouchPhaseBegan) s_singleFingerStart = [NSDate date];
             else if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) {
                 if (s_singleFingerStart && [[NSDate date] timeIntervalSinceDate:s_singleFingerStart] >= kSingleFingerHoldDuration) {
-                    raiseFlexingWindow(); showToast(@"👆 Flexing已呼出");
+                    raiseFlexingWindow(); showToast(@"👆 Flexing已呼出，广告已暂停");
                 }
                 s_singleFingerStart = nil;
             }
@@ -816,7 +831,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             [s_floatWindow addSubview:panel];
             s_floatWindow.panel = panel; s_floatWindow.hidden = NO;
         }
-        showToast(@"🔍 已激活 | 双指呼面板 | 单指长按1秒呼Flexing");
+        showToast(@"🔍 已激活 | 双指呼面板 | 单指长按1秒呼Flex+暂停广告");
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
             if (s_floatWindow) s_floatWindow.hidden = NO;
