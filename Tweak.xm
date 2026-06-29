@@ -500,7 +500,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         _targetViewField.backgroundColor = [UIColor darkGrayColor];
         _targetViewField.textColor = [UIColor whiteColor];
         _targetViewField.font = [UIFont systemFontOfSize:12];
-        _targetViewField.placeholder = @"如 GDTDLBusinessManager";
+        _targetViewField.placeholder = @"如 GDTDLRootView";
         _targetViewField.tag = 1011;
         _targetViewField.delegate = self;
         [self addSubview:_targetViewField];
@@ -516,7 +516,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         _keyPathField.backgroundColor = [UIColor darkGrayColor];
         _keyPathField.textColor = [UIColor whiteColor];
         _keyPathField.font = [UIFont systemFontOfSize:12];
-        _keyPathField.placeholder = @"如 self 或 delegate";
+        _keyPathField.placeholder = @"如 self";
         _keyPathField.tag = 1012;
         _keyPathField.delegate = self;
         [self addSubview:_keyPathField];
@@ -532,7 +532,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         _methodNameField.backgroundColor = [UIColor darkGrayColor];
         _methodNameField.textColor = [UIColor whiteColor];
         _methodNameField.font = [UIFont systemFontOfSize:12];
-        _methodNameField.placeholder = @"如 onDestroy 或 pauseTimer";
+        _methodNameField.placeholder = @"如 AdInspector_SkipSequence";
         _methodNameField.tag = 1013;
         _methodNameField.delegate = self;
         [self addSubview:_methodNameField];
@@ -693,16 +693,16 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)fillPreset1
 {
-    self.targetViewField.text = @"GDTDLBusinessManager";
+    self.targetViewField.text = @"GDTDLRootView";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"onDestroy";
+    self.methodNameField.text = @"AdInspector_SkipSequence";
 }
 
 - (void)fillPreset2
 {
     self.targetViewField.text = @"GDTDLBusinessManager";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"pauseTimer";
+    self.methodNameField.text = @"onDestroy";
 }
 
 - (void)copyLog
@@ -811,7 +811,6 @@ static AdInspectorWindow *s_floatWindow = nil;
             [self showLog:o];
             if (methods.count > 0)
             {
-                // 提取纯方法名（去掉 [类名] 前缀）
                 NSString *fullName = [methods[0] objectForKey:@"method"];
                 NSString *pureName = fullName;
                 if ([pureName hasPrefix:@"["])
@@ -1197,7 +1196,7 @@ static UIView *findViewOfClass(UIView *rt, NSString *cn)
     return nil;
 }
 
-// ==================== 自定义规则执行（增强版：签名打印 + 多类型参数尝试） ====================
+// ==================== 自定义规则执行 ====================
 static void applyCustomRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -1216,231 +1215,262 @@ static void applyCustomRules(void)
             continue;
         }
 
-        BOOL found = NO;
-        id tg = nil;
-
-        // 方法1: 在视图层级中查找
-        for (UIWindow *w in getAllWindows())
+        // 特殊规则：AdInspector_SkipSequence 执行完整跳过序列
+        if ([mn isEqualToString:@"AdInspector_SkipSequence"])
         {
-            if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"])
+            id rootView = nil;
+            id bm = nil;
+
+            for (UIWindow *w in getAllWindows())
+            {
+                if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                UIView *skipView = findSkipLabelInView(w);
+                if (!skipView) continue;
+
+                UIView *parent = skipView.superview;
+                while (parent && ![parent isKindOfClass:[UIWindow class]])
+                {
+                    if ([NSStringFromClass([parent class]) isEqualToString:@"GDTDLRootView"])
+                    {
+                        rootView = parent;
+                        break;
+                    }
+                    parent = parent.superview;
+                }
+                if (!rootView)
+                {
+                    for (UIGestureRecognizer *gr in skipView.gestureRecognizers)
+                    {
+                        id d = gr.delegate;
+                        if ([NSStringFromClass([d class]) isEqualToString:@"GDTDLRootView"])
+                        {
+                            rootView = d;
+                            break;
+                        }
+                    }
+                }
+                if (!rootView)
+                {
+                    parent = skipView.superview;
+                    while (parent && ![parent isKindOfClass:[UIWindow class]])
+                    {
+                        for (UIGestureRecognizer *gr in parent.gestureRecognizers)
+                        {
+                            id d = gr.delegate;
+                            if ([NSStringFromClass([d class]) isEqualToString:@"GDTDLRootView"])
+                            {
+                                rootView = d;
+                                break;
+                            }
+                        }
+                        if (rootView) break;
+                        parent = parent.superview;
+                    }
+                }
+                if (rootView) break;
+            }
+
+            if (rootView && [rootView respondsToSelector:@selector(delegate)])
+            {
+                id d = ((id (*)(id, SEL))objc_msgSend)(rootView, @selector(delegate));
+                if ([NSStringFromClass([d class]) isEqualToString:@"GDTDLBusinessManager"])
+                {
+                    bm = d;
+                }
+            }
+
+            if (!bm)
+            {
+                for (UIWindow *w in getAllWindows())
+                {
+                    if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                    NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
+                    while (views.count > 0)
+                    {
+                        UIView *v = [views lastObject];
+                        [views removeLastObject];
+                        id responder = v.nextResponder;
+                        while (responder)
+                        {
+                            if ([NSStringFromClass([responder class]) isEqualToString:@"GDTDLBusinessManager"])
+                            {
+                                bm = responder;
+                                break;
+                            }
+                            responder = [responder nextResponder];
+                        }
+                        if (bm) break;
+                        [views addObjectsFromArray:v.subviews];
+                    }
+                    if (bm) break;
+                }
+            }
+
+            if (!rootView && !bm)
             {
                 continue;
             }
-            UIView *tv = findViewOfClass(w, tvc);
-            if (tv)
+
+            [[AdInspectorPanel shared] showLog:@"\n🚀 执行完整跳过序列...\n"];
+
+            // 第1步：GDTfunctions9hRIc: (在 bm 上)
+            if (bm && [bm respondsToSelector:NSSelectorFromString(@"GDTfunctions9hRIc:")])
             {
-                tg = getObjectByKeyPath(tv, kp);
-                if (tg)
+                ((void (*)(id, SEL, id))objc_msgSend)(bm, NSSelectorFromString(@"GDTfunctions9hRIc:"), nil);
+                [[AdInspectorPanel shared] showLog:@"  ✅ GDTfunctions9hRIc:\n"];
+            }
+            // 第2步：GDTfunctione5qsNB: (在 rootView 上)
+            if (rootView && [rootView respondsToSelector:NSSelectorFromString(@"GDTfunctione5qsNB:")])
+            {
+                ((void (*)(id, SEL, id))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctione5qsNB:"), nil);
+                [[AdInspectorPanel shared] showLog:@"  ✅ GDTfunctione5qsNB:\n"];
+            }
+            // 第3步：GDTfunctiont7uUIH (在 rootView 上，无参)
+            if (rootView && [rootView respondsToSelector:NSSelectorFromString(@"GDTfunctiont7uUIH")])
+            {
+                ((void (*)(id, SEL))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctiont7uUIH"));
+                [[AdInspectorPanel shared] showLog:@"  ✅ GDTfunctiont7uUIH\n"];
+            }
+            // 第4步：GDTfunctiona3Gplz (在 rootView 上，无参)
+            if (rootView && [rootView respondsToSelector:NSSelectorFromString(@"GDTfunctiona3Gplz")])
+            {
+                ((void (*)(id, SEL))objc_msgSend)(rootView, NSSelectorFromString(@"GDTfunctiona3Gplz"));
+                [[AdInspectorPanel shared] showLog:@"  ✅ GDTfunctiona3Gplz\n"];
+            }
+            // 第5步：onDestroy (在 bm 上，无参)
+            if (bm && [bm respondsToSelector:NSSelectorFromString(@"onDestroy")])
+            {
+                ((void (*)(id, SEL))objc_msgSend)(bm, NSSelectorFromString(@"onDestroy"));
+                [[AdInspectorPanel shared] showLog:@"  ✅ onDestroy\n"];
+            }
+
+            [[AdInspectorPanel shared] showLog:@"🎉 跳过序列执行完毕\n"];
+            return;
+        }
+
+        // 单方法规则
+        BOOL found = NO;
+        id tg = nil;
+
+        if ([tvc isEqualToString:@"GDTDLRootView"])
+        {
+            for (UIWindow *w in getAllWindows())
+            {
+                if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                UIView *skipView = findSkipLabelInView(w);
+                if (!skipView) continue;
+                UIView *parent = skipView.superview;
+                while (parent && ![parent isKindOfClass:[UIWindow class]])
                 {
+                    if ([NSStringFromClass([parent class]) isEqualToString:@"GDTDLRootView"])
+                    {
+                        tg = parent;
+                        found = YES;
+                        break;
+                    }
+                    parent = parent.superview;
+                }
+                if (!tg)
+                {
+                    for (UIGestureRecognizer *gr in skipView.gestureRecognizers)
+                    {
+                        id d = gr.delegate;
+                        if ([NSStringFromClass([d class]) isEqualToString:@"GDTDLRootView"])
+                        {
+                            tg = d;
+                            found = YES;
+                            break;
+                        }
+                    }
+                }
+                if (tg) break;
+            }
+        }
+
+        if (!found && [tvc isEqualToString:@"GDTDLBusinessManager"])
+        {
+            id rootView = nil;
+            for (UIWindow *w in getAllWindows())
+            {
+                if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                UIView *skipView = findSkipLabelInView(w);
+                if (!skipView) continue;
+                UIView *parent = skipView.superview;
+                while (parent && ![parent isKindOfClass:[UIWindow class]])
+                {
+                    if ([NSStringFromClass([parent class]) isEqualToString:@"GDTDLRootView"])
+                    {
+                        rootView = parent;
+                        break;
+                    }
+                    parent = parent.superview;
+                }
+                if (rootView) break;
+            }
+            if (rootView && [rootView respondsToSelector:@selector(delegate)])
+            {
+                id d = ((id (*)(id, SEL))objc_msgSend)(rootView, @selector(delegate));
+                if ([NSStringFromClass([d class]) isEqualToString:@"GDTDLBusinessManager"])
+                {
+                    tg = d;
                     found = YES;
-                    break;
                 }
             }
         }
 
-        // 方法2: 通过类名查找实例
+        if (!found)
+        {
+            for (UIWindow *w in getAllWindows())
+            {
+                if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+                UIView *tv = findViewOfClass(w, tvc);
+                if (tv) { tg = getObjectByKeyPath(tv, kp); if (tg) { found = YES; break; } }
+            }
+        }
+
         if (!found)
         {
             Class targetClass = NSClassFromString(tvc);
             if (targetClass)
             {
-                SEL sharedSelectors[] = {
-                    @selector(sharedInstance),
-                    @selector(sharedManager),
-                    @selector(shared),
-                    @selector(defaultManager),
-                    @selector(instance),
-                };
+                SEL ss[] = {@selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager), @selector(instance)};
                 for (int i = 0; i < 5 && !tg; i++)
                 {
-                    if ([targetClass respondsToSelector:sharedSelectors[i]])
-                    {
-                        tg = ((id (*)(id, SEL))objc_msgSend)(targetClass, sharedSelectors[i]);
-                    }
+                    if ([targetClass respondsToSelector:ss[i]])
+                        tg = ((id (*)(id, SEL))objc_msgSend)(targetClass, ss[i]);
                 }
-
                 if (!tg)
                 {
-                    for (UIWindow *w in getAllWindows())
-                    {
-                        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"])
-                        {
-                            continue;
-                        }
-                        NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
-                        while (views.count > 0)
-                        {
-                            UIView *v = [views lastObject];
-                            [views removeLastObject];
-                            if ([v respondsToSelector:@selector(delegate)])
-                            {
-                                id delegate = ((id (*)(id, SEL))objc_msgSend)(v, @selector(delegate));
-                                if ([delegate isKindOfClass:targetClass])
-                                {
-                                    tg = delegate;
-                                    break;
-                                }
-                            }
-                            id responder = v.nextResponder;
-                            while (responder)
-                            {
-                                if ([responder isKindOfClass:targetClass])
-                                {
-                                    tg = responder;
-                                    break;
-                                }
-                                responder = [responder nextResponder];
-                            }
-                            if (tg)
-                            {
-                                break;
-                            }
-                            [views addObjectsFromArray:v.subviews];
-                        }
-                        if (tg)
-                        {
-                            break;
-                        }
-                    }
-                }
-
-                if (!tg)
-                {
-                    id appDelegate = [UIApplication sharedApplication].delegate;
-                    @try { tg = [appDelegate valueForKey:tvc]; }
-                    @catch (NSException *e) {}
+                    id ad = [UIApplication sharedApplication].delegate;
+                    @try { tg = [ad valueForKey:tvc]; } @catch (NSException *e) {}
                 }
             }
         }
 
-        if ([kp isEqualToString:@"self"] && !tg)
-        {
-            Class targetClass = NSClassFromString(tvc);
-            if (targetClass)
-            {
-                id appDelegate = [UIApplication sharedApplication].delegate;
-                @try { tg = [appDelegate valueForKey:tvc]; }
-                @catch (NSException *e) {}
-            }
-        }
-        else if (tg)
-        {
-            tg = getObjectByKeyPath(tg, kp);
-        }
+        if ([kp isEqualToString:@"self"]) { /* already tg */ }
+        else if (tg) { tg = getObjectByKeyPath(tg, kp); }
 
-        if (!tg)
-        {
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ 未找到 %@ 实例\n", tvc]];
-            continue;
-        }
+        if (!tg || ![tg respondsToSelector:NSSelectorFromString(mn)]) continue;
 
-        SEL m = NSSelectorFromString(mn);
-        if (![tg respondsToSelector:m])
+        NSMethodSignature *sig = [tg methodSignatureForSelector:NSSelectorFromString(mn)];
+        NSUInteger ac = sig.numberOfArguments;
+        if (ac <= 2)
+            ((void (*)(id, SEL))objc_msgSend)(tg, NSSelectorFromString(mn));
+        else if (ac == 3)
         {
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ %@ 不响应 %@\n", NSStringFromClass([tg class]), mn]];
-            continue;
-        }
-
-        NSMethodSignature *sig = [tg methodSignatureForSelector:m];
-        NSUInteger argCount = sig.numberOfArguments;
-
-        NSMutableString *sigLog = [NSMutableString stringWithFormat:@"\n📐 %@.%@\n", NSStringFromClass([tg class]), mn];
-        [sigLog appendFormat:@"  返回值: %s\n", sig.methodReturnType];
-        [sigLog appendFormat:@"  参数数: %lu\n", (unsigned long)argCount];
-        for (NSUInteger i = 0; i < argCount; i++)
-        {
-            const char *type = [sig getArgumentTypeAtIndex:i];
-            [sigLog appendFormat:@"  arg%lu: %s", (unsigned long)i, type];
-            if (i == 0) [sigLog appendString:@" (self)"];
-            else if (i == 1) [sigLog appendString:@" (_cmd)"];
-            else
-            {
-                if (strcmp(type, "@") == 0) [sigLog appendString:@" → id/对象"];
-                else if (strcmp(type, "i") == 0) [sigLog appendString:@" → int"];
-                else if (strcmp(type, "B") == 0) [sigLog appendString:@" → BOOL"];
-                else if (strcmp(type, "q") == 0) [sigLog appendString:@" → NSInteger"];
-                else if (strcmp(type, "d") == 0) [sigLog appendString:@" → double"];
-                else if (strcmp(type, "f") == 0) [sigLog appendString:@" → float"];
-                else if (strcmp(type, "v") == 0) [sigLog appendString:@" → void"];
-                else if (strcmp(type, "Q") == 0) [sigLog appendString:@" → NSUInteger"];
-                else if (strcmp(type, "c") == 0) [sigLog appendString:@" → char"];
-            }
-            [sigLog appendString:@"\n"];
-        }
-
-        BOOL executed = NO;
-        if (argCount <= 2)
-        {
-            [sigLog appendString:@"  ✅ 无参方法，直接调用\n"];
-            ((void (*)(id, SEL))objc_msgSend)(tg, m);
-            executed = YES;
-        }
-        else if (argCount == 3)
-        {
-            const char *type = [sig getArgumentTypeAtIndex:2];
-            if (strcmp(type, "@") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: @\"\" (空字符串)\n"];
-                @try { ((void (*)(id, SEL, id))objc_msgSend)(tg, m, @""); executed = YES; }
-                @catch (NSException *e) { [sigLog appendString:@"  ❌ 传@\"\"异常\n"]; }
-                if (!executed) { ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil); executed = YES; [sigLog appendString:@"  尝试传参: nil\n"]; }
-            }
-            else if (strcmp(type, "B") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: YES (BOOL)\n"];
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(tg, m, YES);
-                executed = YES;
-            }
-            else if (strcmp(type, "i") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: 0 (int)\n"];
-                ((void (*)(id, SEL, int))objc_msgSend)(tg, m, 0);
-                executed = YES;
-            }
-            else if (strcmp(type, "q") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: 0 (NSInteger)\n"];
-                ((void (*)(id, SEL, NSInteger))objc_msgSend)(tg, m, 0);
-                executed = YES;
-            }
-            else if (strcmp(type, "Q") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: 0 (NSUInteger)\n"];
-                ((void (*)(id, SEL, NSUInteger))objc_msgSend)(tg, m, 0);
-                executed = YES;
-            }
-            else if (strcmp(type, "d") == 0)
-            {
-                [sigLog appendString:@"  尝试传参: 0.0 (double)\n"];
-                ((void (*)(id, SEL, double))objc_msgSend)(tg, m, 0.0);
-                executed = YES;
-            }
-            else
-            {
-                [sigLog appendString:[NSString stringWithFormat:@"  尝试传参: nil (未知类型 %s)\n", type]];
-                ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil);
-                executed = YES;
-            }
+            const char *t = [sig getArgumentTypeAtIndex:2];
+            if (strcmp(t, "B") == 0) ((void (*)(id, SEL, BOOL))objc_msgSend)(tg, NSSelectorFromString(mn), YES);
+            else ((void (*)(id, SEL, id))objc_msgSend)(tg, NSSelectorFromString(mn), nil);
         }
         else
         {
-            [sigLog appendString:@"  多参数方法，全部传 nil\n"];
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:tg];
-            [inv setSelector:m];
+            [inv setTarget:tg]; [inv setSelector:NSSelectorFromString(mn)];
             id nilArg = nil;
-            for (NSUInteger i = 2; i < argCount; i++)
-            {
-                [inv setArgument:&nilArg atIndex:i];
-            }
+            for (NSUInteger i = 2; i < ac; i++) [inv setArgument:&nilArg atIndex:i];
             [inv invoke];
-            executed = YES;
         }
-
-        [sigLog appendString:executed ? @"  ✅ 已执行\n" : @"  ❌ 执行失败\n"];
-        [[AdInspectorPanel shared] showLog:sigLog];
     }
-    showToast(@"✅ 自定义规则已执行");
 }
 
 static void triggerSkip(UIView *v, NSDictionary *r)
@@ -1934,7 +1964,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
 
         hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
 
-        showToast(@"🔍 已激活 | 双指呼面板 | 深度追踪");
+        showToast(@"🔍 已激活 | 双指呼面板 | 组合跳过");
         if (isFlexingAvailable())
         {
             raiseFlexingWindow();
