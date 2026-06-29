@@ -139,7 +139,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     UIView *check = hitView;
     while (check && (id)check != (id)self.panel) {
         NSInteger tag = check.tag;
-        if (tag >= 1001 && tag <= 1009) return check;
+        if (tag >= 1001 && tag <= 1010) return check;
         check = check.superview;
     }
     return nil;
@@ -159,6 +159,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)forceShow;
 - (void)hidePanel;
 - (void)addDefaultRule;
+- (void)addPauseTimerRule;
 - (void)testCustomRules;
 @end
 
@@ -168,7 +169,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     static AdInspectorPanel *instance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        instance = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 160, [UIScreen mainScreen].bounds.size.width - 10, 280)];
+        instance = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 160, [UIScreen mainScreen].bounds.size.width - 10, 300)];
     });
     return instance;
 }
@@ -187,19 +188,37 @@ static AdInspectorWindow *s_floatWindow = nil;
         [self addSubview:title];
 
         UIButton *addRuleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        addRuleBtn.frame = CGRectMake(12, 32, 80, 30);
-        [addRuleBtn setTitle:@"+ 添加规则" forState:UIControlStateNormal];
+        addRuleBtn.frame = CGRectMake(12, 32, 55, 30);
+        [addRuleBtn setTitle:@"+预设" forState:UIControlStateNormal];
         [addRuleBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
-        addRuleBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        addRuleBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
         addRuleBtn.tag = 1008;
         [addRuleBtn addTarget:self action:@selector(addDefaultRule) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:addRuleBtn];
 
+        UIButton *addPauseBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        addPauseBtn.frame = CGRectMake(70, 32, 60, 30);
+        [addPauseBtn setTitle:@"+暂停定时器" forState:UIControlStateNormal];
+        [addPauseBtn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
+        addPauseBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        addPauseBtn.tag = 1010;
+        [addPauseBtn addTarget:self action:@selector(addPauseTimerRule) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:addPauseBtn];
+
+        UIButton *editBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        editBtn.frame = CGRectMake(135, 32, 55, 30);
+        [editBtn setTitle:@"✎编辑" forState:UIControlStateNormal];
+        [editBtn setTitleColor:[UIColor orangeColor] forState:UIControlStateNormal];
+        editBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        editBtn.tag = 1010;
+        [editBtn addTarget:self action:@selector(editRulesTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:editBtn];
+
         UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        testBtn.frame = CGRectMake(100, 32, 80, 30);
-        [testBtn setTitle:@"▶ 测试规则" forState:UIControlStateNormal];
+        testBtn.frame = CGRectMake(195, 32, 55, 30);
+        [testBtn setTitle:@"▶测试" forState:UIControlStateNormal];
         [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];
-        testBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        testBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
         testBtn.tag = 1009;
         [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:testBtn];
@@ -257,11 +276,38 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)addDefaultRule {
     NSDictionary *rule1 = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"onDestroy",@"description":@"广点通onDestroy"};
-    NSDictionary *rule2 = @{@"targetView":@"CSJSplashView",@"keyPath":@"self",@"methodName":@"p_skipTapped:",@"description":@"穿山甲p_skipTapped"};
+    NSDictionary *rule2 = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"pauseTimer",@"description":@"广点通pauseTimer"};
     saveCustomRule(rule1);
     saveCustomRule(rule2);
-    [self showLog:@"\n✅ 已添加规则:\n  GDTDLRootView → delegate → onDestroy\n  CSJSplashView → self → p_skipTapped:\n"];
+    [self showLog:@"\n✅ 已添加规则:\n  GDTDLRootView → delegate → onDestroy\n  GDTDLRootView → delegate → pauseTimer\n"];
     showToast(@"✅ 规则已添加");
+}
+
+- (void)addPauseTimerRule {
+    NSDictionary *rule = @{@"targetView":@"GDTDLRootView",@"keyPath":@"delegate",@"methodName":@"pauseTimer",@"description":@"广点通pauseTimer"};
+    saveCustomRule(rule);
+    [self showLog:@"\n✅ 已添加规则: GDTDLRootView → delegate → pauseTimer\n"];
+    showToast(@"✅ pauseTimer规则已添加");
+}
+
+- (void)editRulesTapped {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *rules = [ud arrayForKey:kCustomRulesKey] ?: @[];
+    if (rules.count == 0) {
+        [self showLog:@"\n⚠️ 没有可编辑的规则，请先添加规则\n"];
+        return;
+    }
+    // 显示编辑提示
+    NSMutableString *out = [NSMutableString stringWithFormat:@"\n📝 编辑模式（%lu条规则）:\n", (unsigned long)rules.count];
+    [out appendString:@"  请用Flexing分析后，清空旧规则再重新添加。\n"];
+    [out appendString:@"  当前规则列表：\n"];
+    for (NSInteger i = 0; i < rules.count; i++) {
+        NSDictionary *rule = rules[i];
+        [out appendFormat:@"  %ld: %@ → %@.%@\n", (long)i+1, rule[@"targetView"], rule[@"keyPath"], rule[@"methodName"]];
+    }
+    [out appendString:@"\n  建议：在Flexing中点击GDTDLBusinessManager\n  查看方法列表，找包含skip/close/dismiss的方法\n"];
+    [self showLog:out];
+    showToast(@"📝 请查看日志");
 }
 
 - (void)testCustomRules {
@@ -293,7 +339,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         NSDictionary *rule = customRules[i];
         [out appendFormat:@"  %ld: %@ → %@.%@\n", (long)i+1, rule[@"targetView"], rule[@"keyPath"], rule[@"methodName"]];
     }
-    [out appendString:@"\n💡 点击\"+ 添加规则\"添加预设规则\n"];
+    [out appendString:@"\n💡 点击\"✎编辑\"查看编辑提示\n"];
     
     [self showLog:out];
 }
@@ -310,14 +356,14 @@ static AdInspectorWindow *s_floatWindow = nil;
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
             s_floatWindow.windowScene = activeScene;
             [s_floatWindow addSubview:self];
-            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
             self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             s_floatWindow.panel = self; s_floatWindow.hidden = NO;
         }
     } else {
         if (!self.superview) {
             [s_floatWindow addSubview:self];
-            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
             self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             s_floatWindow.panel = self;
         }
@@ -424,7 +470,7 @@ static void saveRule(NSDictionary *rule) {
 }
 
 static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
-    if ([root isKindOfClass:[AdInspectorPanel class]] || [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"] || (root.tag >= 1001 && root.tag <= 1009)) return nil;
+    if ([root isKindOfClass:[AdInspectorPanel class]] || [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"] || (root.tag >= 1001 && root.tag <= 1010)) return nil;
     NSString *targetClass = rule[@"buttonClass"]; NSString *textPattern = rule[@"buttonTextPattern"]; NSArray *chain = rule[@"hierarchyChain"];
     if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
         NSString *currentText = nil;
@@ -480,7 +526,14 @@ static void applyCustomRules(void) {
     NSArray *customRules = [ud arrayForKey:kCustomRulesKey];
     if (!customRules.count) return;
     
-    for (NSDictionary *rule in customRules) {
+    // 先执行 pauseTimer，再执行其他
+    NSArray *sortedRules = [customRules sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        if ([a[@"methodName"] containsString:@"pauseTimer"]) return NSOrderedAscending;
+        if ([b[@"methodName"] containsString:@"pauseTimer"]) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    
+    for (NSDictionary *rule in sortedRules) {
         NSString *targetViewClass = rule[@"targetView"];
         NSString *keyPath = rule[@"keyPath"];
         NSString *methodName = rule[@"methodName"];
@@ -497,13 +550,12 @@ static void applyCustomRules(void) {
                         NSMethodSignature *sig = [target methodSignatureForSelector:method];
                         if (sig.numberOfArguments <= 2) { ((void (*)(id, SEL))objc_msgSend)(target, method); }
                         else { ((void (*)(id, SEL, id))objc_msgSend)(target, method, nil); }
-                        showToast([NSString stringWithFormat:@"✅ 自定义规则: %@", rule[@"description"]]);
-                        return;
                     }
                 }
             }
         }
     }
+    showToast(@"✅ 自定义规则已执行");
 }
 
 // ==================== 强制移除广告视图 ====================
@@ -558,7 +610,7 @@ static BOOL isSkipText(NSString *text) {
 }
 
 static UIView *findSkipLabelInView(UIView *root) {
-    if ([root isKindOfClass:[AdInspectorPanel class]] || (root.tag >= 1001 && root.tag <= 1009)) return nil;
+    if ([root isKindOfClass:[AdInspectorPanel class]] || (root.tag >= 1001 && root.tag <= 1010)) return nil;
     NSString *currentText = nil;
     if ([root isKindOfClass:[UIButton class]]) currentText = [(UIButton *)root titleForState:UIControlStateNormal];
     else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
@@ -571,7 +623,7 @@ static UIView *findSkipLabelInView(UIView *root) {
 // ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
-    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"] || (view.tag >= 1001 && view.tag <= 1009)) return;
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"] || (view.tag >= 1001 && view.tag <= 1010)) return;
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
     s_lastAnalysisTime = now;
@@ -644,7 +696,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
             s_floatWindow.windowScene = activeScene;
             AdInspectorPanel *panel = [AdInspectorPanel shared];
-            panel.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            panel.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 300);
             panel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
             [s_floatWindow addSubview:panel];
             s_floatWindow.panel = panel; s_floatWindow.hidden = NO;
