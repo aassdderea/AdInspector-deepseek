@@ -1610,7 +1610,6 @@ static void hookAllMethodsOfClass(Class cls)
         if (typeEncoding && typeEncoding[0] == 'v')
         {
             IMP originalIMP = method_getImplementation(methods[i]);
-            __weak id weakSelf = nil;
             id newBlock = ^(id self) {
                 if (originalIMP)
                 {
