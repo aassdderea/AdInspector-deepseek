@@ -177,13 +177,11 @@ static NSArray *stopDeepTracking(void)
 }
 
 // ==================== 前置声明 ====================
-static void saveRule(NSDictionary *r);
 static void applyAllSavedRules(void);
 static void clearAllRules(void);
 static void clearCustomRules(void);
 static void showToast(NSString *msg);
 static UIWindow *getKeyWindow(void);
-static UIView *findSkipLabelInView(UIView *root);
 static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
@@ -334,12 +332,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)handlePan:(UIPanGestureRecognizer *)p { CGPoint t = [p translationInView:self]; self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y); [p setTranslation:CGPointZero inView:self]; }
 - (void)hidePanel { self.hidden = YES; }
 - (void)fillPreset1 { self.targetViewField.text = @"GDTDLBusinessManager"; self.keyPathField.text = @"self"; self.methodNameField.text = @"onDestroy"; }
-- (void)copyLog
-{
-    NSString *t = self.logBuffer;
-    if (!t.length) { showToast(@"⚠️ 日志为空"); return; }
-    [[UIPasteboard generalPasteboard] setString:t]; showToast(@"✅ 已复制");
-}
+- (void)copyLog { NSString *t = self.logBuffer; if (!t.length) { showToast(@"⚠️ 日志为空"); return; } [[UIPasteboard generalPasteboard] setString:t]; showToast(@"✅ 已复制"); }
 - (void)addCustomRuleFromFields
 {
     NSString *tv = self.targetViewField.text, *kp = self.keyPathField.text, *mn = self.methodNameField.text;
@@ -396,9 +389,14 @@ static void showToast(NSString *m)
 }
 
 // ==================== 规则管理 ====================
-static void saveRule(NSDictionary *r) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *ex = [ud arrayForKey:kRulesKey] ?: @[]; NSInteger ei = -1; for (NSInteger i = 0; i < ex.count; i++) { NSDictionary *x = ex[i]; if ([x[@"buttonClass"] isEqualToString:r[@"buttonClass"]] && [x[@"buttonTextPattern"] isEqualToString:r[@"buttonTextPattern"]]) { ei = i; break; } } NSMutableArray *nr = [ex mutableCopy]; if (ei >= 0) [nr replaceObjectAtIndex:ei withObject:r]; else [nr addObject:r]; [ud setObject:nr forKey:kRulesKey]; [ud synchronize]; }
 static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
-static void saveCustomRule(NSDictionary *r) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[]; for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"keyPath"] isEqualToString:r[@"keyPath"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; } NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize]; }
+static void saveCustomRule(NSDictionary *r)
+{
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[];
+    for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"keyPath"] isEqualToString:r[@"keyPath"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; }
+    NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize];
+}
 static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; }
 static id getObjectByKeyPath(id o, NSString *kp) { if ([kp isEqualToString:@"self"]) return o; NSArray *ks = [kp componentsSeparatedByString:@"."]; id c = o; for (NSString *k in ks) { if (!c) return nil; c = [c valueForKey:k]; } return c; }
 static UIView *findViewOfClass(UIView *rt, NSString *cn) { if ([NSStringFromClass([rt class]) isEqualToString:cn]) return rt; for (UIView *sb in rt.subviews) { UIView *f = findViewOfClass(sb, cn); if (f) return f; } return nil; }
@@ -488,10 +486,11 @@ static void applyCustomRules(void)
     showToast(@"✅ 自定义规则已执行");
 }
 
-static void applyAllSavedRules(void) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; if (([ud arrayForKey:kCustomRulesKey] ?: @[]).count > 0) applyCustomRules(); }
-
-static BOOL isSkipText(NSString *t) { if (!t || !t.length) return NO; for (NSString *k in @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip", @"Skip", @"Close", @"SKIP", @"CLOSE"]) if ([t rangeOfString:k options:NSCaseInsensitiveSearch].location != NSNotFound && t.length <= 15) return YES; return NO; }
-static UIView *findSkipLabelInView(UIView *rt) { if ([rt isKindOfClass:[AdInspectorPanel class]] || (rt.tag >= 1001 && rt.tag <= 1025)) return nil; NSString *ct = nil; if ([rt isKindOfClass:[UIButton class]]) ct = [(UIButton *)rt titleForState:UIControlStateNormal]; else if ([rt isKindOfClass:[UILabel class]]) ct = [(UILabel *)rt text] ?: [(UILabel *)rt attributedText].string; if (!ct) ct = rt.accessibilityLabel; if (isSkipText(ct)) return rt; for (UIView *sb in rt.subviews) { UIView *f = findSkipLabelInView(sb); if (f) return f; } return nil; }
+static void applyAllSavedRules(void)
+{
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (([ud arrayForKey:kCustomRulesKey] ?: @[]).count > 0) applyCustomRules();
+}
 
 // ==================== Hook ====================
 %hook UIApplication
@@ -512,7 +511,6 @@ static UIView *findSkipLabelInView(UIView *rt) { if ([rt isKindOfClass:[AdInspec
             }
         }
         else s_twoFingerStart = nil;
-        if (ts.count == 1) { UITouch *t = [ts anyObject]; if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) { /* analyzeTouchView removed for brevity */ } }
     }
 }
 %end
