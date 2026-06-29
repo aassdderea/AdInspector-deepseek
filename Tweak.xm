@@ -658,6 +658,18 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
     %orig;
 }
 
+- (void)GDTfunctione5qsNB:(id)arg1 {
+    NSMutableString *log = [NSMutableString string];
+    [log appendFormat:@"\n🔍 GDTfunctione5qsNB 真实参数:\n"];
+    [log appendFormat:@"参数值: %@\n", arg1];
+    [log appendFormat:@"参数类型: %@\n", NSStringFromClass([arg1 class])];
+    [log appendFormat:@"参数地址: %p\n", arg1];
+    [log appendString:@"══════\n"];
+    [[AdInspectorPanel shared] showLog:log];
+    saveToFile(log);
+    %orig;
+}
+
 %end
 // ==================== Hook ====================
 %hook UIGestureRecognizer
