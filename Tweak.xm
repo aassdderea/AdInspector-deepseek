@@ -126,57 +126,26 @@ static void raiseFlexingWindow(void)
 }
 
 // ==================== 方法追踪 ====================
-static void recordMethodCall(NSString *name)
+static void startTracking(void)
 {
-    if (!s_isTracking && !s_isDeepTracking)
-    {
-        return;
-    }
-    if ([name hasPrefix:@"set"] ||
-        [name hasPrefix:@"log"] ||
-        [name containsString:@"videoPlayer"] ||
-        [name isEqualToString:@"adModel"] ||
-        [name isEqualToString:@"adConfig"] ||
-        [name isEqualToString:@"delegate"] ||
-        [name isEqualToString:@"rootView"] ||
-        [name isEqualToString:@"gdm"] ||
-        [name hasPrefix:@"init"] ||
-        [name hasPrefix:@"."] ||
-        [name hasPrefix:@"_"] ||
-        [name hasPrefix:@"cxx"] ||
-        [name isEqualToString:@".cxx_destruct"])
-    {
-        return;
-    }
-    if (s_isTracking)
-    {
-        @synchronized(s_trackedMethods)
-        {
-            [s_trackedMethods addObject:@{
-                @"method": name,
-                @"time": @([[NSDate date] timeIntervalSinceDate:s_trackStartTime])
-            }];
-        }
-    }
-    if (s_isDeepTracking)
-    {
-        @synchronized(s_deepTrackedMethods)
-        {
-            [s_deepTrackedMethods addObject:@{
-                @"method": name,
-                @"time": @([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])
-            }];
-        }
-    }
+    s_trackedMethods = [NSMutableArray array];
+    s_isTracking = YES;
+    s_trackStartTime = [NSDate date];
 }
 
-// ==================== Hook 类所有方法 ====================
+static void stopTracking(void)
+{
+    s_isTracking = NO;
+}
+
+// ==================== Hook 类所有方法（带类名前缀） ====================
 static void hookAllMethodsOfClass(Class cls)
 {
     if (!cls)
     {
         return;
     }
+    NSString *className = NSStringFromClass(cls);
     unsigned int methodCount = 0;
     Method *methods = class_copyMethodList(cls, &methodCount);
     for (unsigned int i = 0; i < methodCount; i++)
@@ -202,30 +171,58 @@ static void hookAllMethodsOfClass(Class cls)
         if (typeEncoding && typeEncoding[0] == 'v')
         {
             IMP originalIMP = method_getImplementation(methods[i]);
+            NSString *fullMethodName = [NSString stringWithFormat:@"[%@] %@", className, methodName];
             id newBlock = ^(id self) {
                 if (originalIMP)
                 {
                     ((void (*)(id, SEL))originalIMP)(self, sel);
                 }
-                recordMethodCall(methodName);
+                if (!s_isTracking && !s_isDeepTracking)
+                {
+                    return;
+                }
+                if ([methodName hasPrefix:@"set"] ||
+                    [methodName hasPrefix:@"log"] ||
+                    [methodName containsString:@"videoPlayer"] ||
+                    [methodName isEqualToString:@"adModel"] ||
+                    [methodName isEqualToString:@"adConfig"] ||
+                    [methodName isEqualToString:@"delegate"] ||
+                    [methodName isEqualToString:@"rootView"] ||
+                    [methodName isEqualToString:@"gdm"] ||
+                    [methodName hasPrefix:@"init"] ||
+                    [methodName hasPrefix:@"."] ||
+                    [methodName hasPrefix:@"_"] ||
+                    [methodName hasPrefix:@"cxx"] ||
+                    [methodName isEqualToString:@".cxx_destruct"])
+                {
+                    return;
+                }
+                if (s_isTracking)
+                {
+                    @synchronized(s_trackedMethods)
+                    {
+                        [s_trackedMethods addObject:@{
+                            @"method": fullMethodName,
+                            @"time": @([[NSDate date] timeIntervalSinceDate:s_trackStartTime])
+                        }];
+                    }
+                }
+                if (s_isDeepTracking)
+                {
+                    @synchronized(s_deepTrackedMethods)
+                    {
+                        [s_deepTrackedMethods addObject:@{
+                            @"method": fullMethodName,
+                            @"time": @([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])
+                        }];
+                    }
+                }
             };
             IMP newIMP = imp_implementationWithBlock(newBlock);
             method_setImplementation(methods[i], newIMP);
         }
     }
     free(methods);
-}
-
-static void startTracking(void)
-{
-    s_trackedMethods = [NSMutableArray array];
-    s_isTracking = YES;
-    s_trackStartTime = [NSDate date];
-}
-
-static void stopTracking(void)
-{
-    s_isTracking = NO;
 }
 
 static void startDeepTracking(void)
@@ -272,7 +269,6 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
                 if (target && as)
                 {
                     [o appendFormat:@"    → %@.%@ (KVC)\n", NSStringFromClass([target class]), as];
-                    recordMethodCall(as);
                     [ti addObject:@{
                         @"viewClass": NSStringFromClass([cur class]),
                         @"gestureClass": NSStringFromClass([gr class]),
@@ -299,7 +295,6 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
             {
                 NSString *as = NSStringFromSelector(action);
                 [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as];
-                recordMethodCall(as);
                 [ti addObject:@{
                     @"viewClass": NSStringFromClass([cur class]),
                     @"gestureClass": NSStringFromClass([gr class]),
@@ -322,7 +317,6 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
             if ([delegate respondsToSelector:sel])
             {
                 [o appendFormat:@"    → %@.%@ (delegate可能)\n", NSStringFromClass([delegate class]), actionName];
-                recordMethodCall(actionName);
                 [ti addObject:@{
                     @"viewClass": NSStringFromClass([cur class]),
                     @"gestureClass": NSStringFromClass([gr class]),
@@ -701,14 +695,14 @@ static AdInspectorWindow *s_floatWindow = nil;
 {
     self.targetViewField.text = @"GDTDLBusinessManager";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"GDTfunctiont7uUIH";
+    self.methodNameField.text = @"onDestroy";
 }
 
 - (void)fillPreset2
 {
     self.targetViewField.text = @"GDTDLBusinessManager";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"GDTfunctiona3Gplz";
+    self.methodNameField.text = @"pauseTimer";
 }
 
 - (void)copyLog
@@ -750,7 +744,6 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)testCustomRules
 {
     applyCustomRules();
-    [self showLog:@"\n🔍 已执行自定义规则测试\n"];
 }
 
 - (void)clearRulesTapped
@@ -818,9 +811,19 @@ static AdInspectorWindow *s_floatWindow = nil;
             [self showLog:o];
             if (methods.count > 0)
             {
-                NSDictionary *first = methods[0];
-                self.methodNameField.text = first[@"method"];
-                showToast([NSString stringWithFormat:@"💡 已填入: %@", first[@"method"]]);
+                // 提取纯方法名（去掉 [类名] 前缀）
+                NSString *fullName = [methods[0] objectForKey:@"method"];
+                NSString *pureName = fullName;
+                if ([pureName hasPrefix:@"["])
+                {
+                    NSRange bracketRange = [pureName rangeOfString:@"] "];
+                    if (bracketRange.location != NSNotFound)
+                    {
+                        pureName = [pureName substringFromIndex:bracketRange.location + 2];
+                    }
+                }
+                self.methodNameField.text = pureName;
+                showToast([NSString stringWithFormat:@"💡 已填入: %@", pureName]);
             }
         }
         else
@@ -1241,7 +1244,6 @@ static void applyCustomRules(void)
             Class targetClass = NSClassFromString(tvc);
             if (targetClass)
             {
-                // 2a: 尝试常见单例方法
                 SEL sharedSelectors[] = {
                     @selector(sharedInstance),
                     @selector(sharedManager),
@@ -1257,7 +1259,6 @@ static void applyCustomRules(void)
                     }
                 }
 
-                // 2b: 遍历窗口查找 delegate
                 if (!tg)
                 {
                     for (UIWindow *w in getAllWindows())
@@ -1303,7 +1304,6 @@ static void applyCustomRules(void)
                     }
                 }
 
-                // 2c: 从 AppDelegate 查找
                 if (!tg)
                 {
                     id appDelegate = [UIApplication sharedApplication].delegate;
@@ -1344,7 +1344,6 @@ static void applyCustomRules(void)
         NSMethodSignature *sig = [tg methodSignatureForSelector:m];
         NSUInteger argCount = sig.numberOfArguments;
 
-        // 打印方法签名
         NSMutableString *sigLog = [NSMutableString stringWithFormat:@"\n📐 %@.%@\n", NSStringFromClass([tg class]), mn];
         [sigLog appendFormat:@"  返回值: %s\n", sig.methodReturnType];
         [sigLog appendFormat:@"  参数数: %lu\n", (unsigned long)argCount];
@@ -1369,11 +1368,9 @@ static void applyCustomRules(void)
             [sigLog appendString:@"\n"];
         }
 
-        // 根据参数个数尝试不同的传参方式
         BOOL executed = NO;
         if (argCount <= 2)
         {
-            // 无参方法
             [sigLog appendString:@"  ✅ 无参方法，直接调用\n"];
             ((void (*)(id, SEL))objc_msgSend)(tg, m);
             executed = YES;
@@ -1427,7 +1424,6 @@ static void applyCustomRules(void)
         }
         else
         {
-            // 多参数，全部传 nil
             [sigLog appendString:@"  多参数方法，全部传 nil\n"];
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
             [inv setTarget:tg];
@@ -1823,7 +1819,6 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
                         id target = [t valueForKey:@"_target"];
                         id action = [t valueForKey:@"_action"];
                         [log appendFormat:@"🎯 target: %@ → %@\n", NSStringFromClass([target class]), action];
-                        recordMethodCall([action isKindOfClass:[NSString class]] ? action : NSStringFromSelector((SEL)[action pointerValue]));
                     }
                 }
             }
