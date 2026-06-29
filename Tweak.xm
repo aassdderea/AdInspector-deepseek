@@ -27,6 +27,24 @@ static SEL ATGetSelectorIvar(id object, const char *name) {
     return *(SEL *)((uint8_t *)(__bridge void *)object + offset);
 }
 
+// ==================== 获取所有窗口（兼容 iOS 15+） ====================
+static NSArray<UIWindow *> *getAllWindows(void) {
+    NSMutableArray *allWindows = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            [allWindows addObjectsFromArray:[(UIWindowScene *)scene windows]];
+        }
+    }
+    if (allWindows.count == 0) {
+        // 兼容旧版 iOS
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [allWindows addObjectsFromArray:[UIApplication sharedApplication].windows];
+        #pragma clang diagnostic pop
+    }
+    return allWindows;
+}
+
 // ==================== Flexing 窗口置顶 ====================
 static void raiseFlexingWindow(void) {
     NSArray *flexClassNames = @[
@@ -36,7 +54,7 @@ static void raiseFlexingWindow(void) {
         @"FLEXOverlayWindow"
     ];
     
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+    for (UIWindow *window in getAllWindows()) {
         for (NSString *className in flexClassNames) {
             if ([NSStringFromClass([window class]) isEqualToString:className]) {
                 window.windowLevel = CGFLOAT_MAX;
@@ -375,6 +393,7 @@ static void highlightView(UIView *view) {
         if (sv) { sv.layer.borderColor = oldColor ? oldColor.CGColor : NULL; sv.layer.borderWidth = oldWidth; }
     });
 }
+
 // ==================== 规则管理 ====================
 static void saveRule(NSDictionary *rule) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -751,14 +770,12 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                 }
             }
             
-            // 增强手势分析：KVC + Ivar
             for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
                 found = YES;
                 [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView];
                 
                 BOOL gotTargetInfo = NO;
                 
-                // KVC读取
                 @try {
                     NSArray *tgts = [gr valueForKey:@"_targets"];
                     if (tgts && [tgts isKindOfClass:[NSArray class]]) {
@@ -782,7 +799,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
                     }
                 } @catch (NSException *e) {}
                 
-                // Ivar直接读取（突破私有限制）
                 if (!gotTargetInfo) {
                     id targets = ATGetObjectIvar(gr, "_targets");
                     if (targets && [targets isKindOfClass:[NSArray class]]) {
@@ -833,7 +849,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         saveToFile(out);
         highlightView(actualView);
 
-        // 学习规则
         NSString *buttonText = nil;
         if ([actualView isKindOfClass:[UIButton class]]) buttonText = [(UIButton *)actualView titleForState:UIControlStateNormal];
         else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text] ?: [(UILabel *)actualView attributedText].string;
@@ -850,7 +865,6 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
         if (containerClass) rule[@"containerClass"] = containerClass;
         if (windowClass) rule[@"windowClass"] = windowClass;
 
-        // 提取 target/action
         for (NSDictionary *info in taInfo) {
             if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
                 rule[@"triggerType"] = @"controlEvent";
