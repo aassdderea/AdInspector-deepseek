@@ -2,10 +2,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// ==================== 单指下滑暂停广告 ====================
-static CGPoint s_panStartPoint;
-static BOOL s_isPanningDown = NO;
-static const CGFloat kSwipeDownThreshold = 80.0;
+// ==================== 规则存储 Key ====================
+static NSString *const kRulesKey = @"AdInspector_SkipRules";
+static NSString *const kCustomRulesKey = @"AdInspector_CustomRules";
 
 // ==================== Ivar 读取辅助函数 ====================
 static Ivar ATFindIvar(Class cls, const char *name) {
@@ -46,51 +45,9 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return allWindows;
 }
 
-// ==================== Flexing 窗口自动置顶 + 暂停广告 ====================
-static void pauseAnimationsInView(UIView *view) {
-    view.layer.speed = 0;
-    view.layer.timeOffset = [view.layer convertTime:CACurrentMediaTime() fromLayer:nil];
-    for (UIView *sub in view.subviews) {
-        pauseAnimationsInView(sub);
-    }
-}
-
-static UIView *findAdRootInView(UIView *view) {
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"GDTSplash"] || [cls containsString:@"CSJSplash"] || 
-        [cls containsString:@"GDTDLRoot"] || [cls containsString:@"SplashView"]) {
-        return view;
-    }
-    for (UIView *sub in view.subviews) {
-        UIView *found = findAdRootInView(sub);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static UIView *findAdRootView(void) {
-    for (UIWindow *window in getAllWindows()) {
-        // 跳过插件自身窗口（字符串比较避免前向声明问题）
-        if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
-        UIView *adRoot = findAdRootInView(window);
-        if (adRoot) return adRoot;
-    }
-    return nil;
-}
-
-static void pauseAdAnimations(void) {
-    UIView *adRoot = findAdRootView();
-    if (adRoot) {
-        pauseAnimationsInView(adRoot);
-        // Toast在AdInspectorPanel定义之后才能调用，这里用NSLog替代
-        NSLog(@"[AdInspector] ⏸ 广告已暂停");
-    }
-}
-
+// ==================== Flexing 窗口自动置顶 ====================
 static BOOL isFlexingAvailable(void) {
-    NSArray *flexClassNames = @[
-        @"FLEXWindow", @"FLEXExplorerWindow", @"FLEXManagerWindow", @"FLEXOverlayWindow"
-    ];
+    NSArray *flexClassNames = @[@"FLEXWindow",@"FLEXExplorerWindow",@"FLEXManagerWindow",@"FLEXOverlayWindow"];
     for (UIWindow *window in getAllWindows()) {
         for (NSString *className in flexClassNames) {
             if ([NSStringFromClass([window class]) isEqualToString:className]) return YES;
@@ -100,9 +57,7 @@ static BOOL isFlexingAvailable(void) {
 }
 
 static void raiseFlexingWindow(void) {
-    NSArray *flexClassNames = @[
-        @"FLEXWindow", @"FLEXExplorerWindow", @"FLEXManagerWindow", @"FLEXOverlayWindow"
-    ];
+    NSArray *flexClassNames = @[@"FLEXWindow",@"FLEXExplorerWindow",@"FLEXManagerWindow",@"FLEXOverlayWindow"];
     for (UIWindow *window in getAllWindows()) {
         for (NSString *className in flexClassNames) {
             if ([NSStringFromClass([window class]) isEqualToString:className]) {
@@ -116,7 +71,7 @@ static void raiseFlexingWindow(void) {
     }
 }
 
-// ==================== 前置声明（全部函数） ====================
+// ==================== 前置声明 ====================
 static NSString *getControlEventName(UIControlEvents event);
 static void saveToFile(NSString *log);
 static void analyzeTouchView(UIView *view, CGPoint touchPoint);
@@ -126,10 +81,15 @@ static void applyAllSavedRules(void);
 static UIView *findMatchingView(UIView *root, NSDictionary *rule);
 static void triggerSkip(UIView *view, NSDictionary *rule);
 static void clearAllRules(void);
+static void clearCustomRules(void);
 static void showToast(NSString *message);
 static UIWindow *getKeyWindow(void);
 static UIView *findSkipLabelInView(UIView *root);
 static void forceRemoveAdView(UIView *view);
+static void saveCustomRule(NSDictionary *rule);
+static void applyCustomRules(void);
+static UIView *findViewOfClass(UIView *root, NSString *className);
+static id getObjectByKeyPath(id object, NSString *keyPath);
 
 // ==================== 分析防抖 ====================
 static NSDate *s_lastAnalysisTime = nil;
@@ -139,9 +99,6 @@ static const NSTimeInterval kMinAnalysisInterval = 0.3;
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
 static NSDate *s_ignoreSingleTouchUntil = nil;
-
-// ==================== 规则存储 Key ====================
-static NSString *const kRulesKey = @"AdInspector_SkipRules";
 
 // ==================== 获取 keyWindow ====================
 static UIWindow *getKeyWindow(void) {
@@ -156,7 +113,7 @@ static UIWindow *getKeyWindow(void) {
     return nil;
 }
 
-// ==================== 独立悬浮窗（永不消失） ====================
+// ==================== 独立悬浮窗 ====================
 @class AdInspectorPanel;
 @interface AdInspectorWindow : UIWindow
 @property (nonatomic, weak) AdInspectorPanel *panel;
@@ -165,7 +122,6 @@ static UIWindow *getKeyWindow(void) {
 static AdInspectorWindow *s_floatWindow = nil;
 
 @implementation AdInspectorWindow
-
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
@@ -177,7 +133,6 @@ static AdInspectorWindow *s_floatWindow = nil;
     }
     return self;
 }
-
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self || (id)hitView == (id)self.panel) return nil;
@@ -189,7 +144,6 @@ static AdInspectorWindow *s_floatWindow = nil;
     }
     return nil;
 }
-
 - (void)setHidden:(BOOL)hidden {
     if (hidden && !self.isHidden) return;
     [super setHidden:hidden];
@@ -204,6 +158,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)showLog:(NSString *)log;
 - (void)forceShow;
 - (void)hidePanel;
+- (void)addCustomRuleFromInput:(NSString *)targetView keyPath:(NSString *)keyPath methodName:(NSString *)methodName;
 @end
 
 @implementation AdInspectorPanel
@@ -226,9 +181,27 @@ static AdInspectorWindow *s_floatWindow = nil;
         self.userInteractionEnabled = YES; self.clipsToBounds = NO; self.hidden = YES;
 
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 240, 20)];
-        title.text = @"🔍 AdInspector | 下滑暂停广告"; title.textColor = [UIColor cyanColor];
+        title.text = @"🔍 AdInspector | 自定义规则"; title.textColor = [UIColor cyanColor];
         title.font = [UIFont boldSystemFontOfSize:12]; title.tag = 1001;
         [self addSubview:title];
+
+        UIButton *addRuleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        addRuleBtn.frame = CGRectMake(12, 32, 80, 30);
+        [addRuleBtn setTitle:@"+ 添加规则" forState:UIControlStateNormal];
+        [addRuleBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
+        addRuleBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        addRuleBtn.tag = 1008;
+        [addRuleBtn addTarget:self action:@selector(addDefaultRule) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:addRuleBtn];
+
+        UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        testBtn.frame = CGRectMake(100, 32, 80, 30);
+        [testBtn setTitle:@"▶ 测试规则" forState:UIControlStateNormal];
+        [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];
+        testBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+        testBtn.tag = 1009;
+        [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:testBtn];
 
         UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         closeBtn.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30);
@@ -260,7 +233,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
         [self addGestureRecognizer:pan];
 
-        CGFloat tvY = 32;
+        CGFloat tvY = 68;
         self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, tvY, self.bounds.size.width - 10, self.bounds.size.height - tvY - 5)];
         self.logTextView.backgroundColor = [UIColor clearColor]; self.logTextView.textColor = [UIColor greenColor];
         self.logTextView.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
@@ -281,29 +254,58 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)hidePanel { self.hidden = YES; }
 
-- (void)clearRulesTapped { 
-    clearAllRules(); 
-    [self showLog:@"\n🗑️ 已清空所有学习规则\n"]; 
-    showToast(@"🗑️ 规则已清除"); 
+- (void)addDefaultRule {
+    // 添加广点通 onDestroy 规则
+    [self addCustomRuleFromInput:@"GDTDLRootView" keyPath:@"delegate" methodName:@"onDestroy"];
+    
+    // 添加穿山甲 p_skipTapped 规则（备用）
+    [self addCustomRuleFromInput:@"CSJSplashView" keyPath:@"self" methodName:@"p_skipTapped:"];
+}
+
+- (void)addCustomRuleFromInput:(NSString *)targetView keyPath:(NSString *)keyPath methodName:(NSString *)methodName {
+    NSDictionary *rule = @{
+        @"targetView": targetView,
+        @"keyPath": keyPath,
+        @"methodName": methodName,
+        @"description": [NSString stringWithFormat:@"%@ → %@", targetView, methodName]
+    };
+    saveCustomRule(rule);
+    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加规则: %@ → %@.%@\n", targetView, keyPath, methodName]];
+    showToast(@"✅ 规则已添加");
+}
+
+- (void)testCustomRules {
+    applyCustomRules();
+    [self showLog:@"\n🔍 已执行自定义规则测试\n"];
+}
+
+- (void)clearRulesTapped {
+    clearAllRules();
+    clearCustomRules();
+    [self showLog:@"\n🗑️ 已清空所有规则\n"];
+    showToast(@"🗑️ 规则已清除");
 }
 
 - (void)viewRulesTapped {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *rules = [ud arrayForKey:kRulesKey];
-    if (rules.count == 0) {
-        [self showLog:@"\n📋 当前无已保存规则\n"];
-    } else {
-        NSMutableString *out = [NSMutableString stringWithFormat:@"\n📋 已保存规则 (%lu条):\n", (unsigned long)rules.count];
-        for (NSInteger i = 0; i < rules.count; i++) {
-            NSDictionary *rule = rules[i];
-            [out appendFormat:@"\n规则%ld: %@ \"%@\" 触发:%@ 容器:%@ 目标:%@.%@\n层级链:%@\n",
-             (long)i+1, rule[@"buttonClass"], rule[@"buttonTextPattern"],
-             rule[@"triggerType"] ?: @"未知", rule[@"containerClass"] ?: @"未知",
-             rule[@"targetClass"] ?: @"-", rule[@"actionSelector"] ?: @"-",
-             [rule[@"hierarchyChain"] componentsJoinedByString:@" → "]];
-        }
-        [self showLog:out];
+    NSArray *autoRules = [ud arrayForKey:kRulesKey] ?: @[];
+    NSArray *customRules = [ud arrayForKey:kCustomRulesKey] ?: @[];
+    
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"\n📋 自动规则 (%lu条):\n", (unsigned long)autoRules.count];
+    for (NSInteger i = 0; i < autoRules.count; i++) {
+        NSDictionary *rule = autoRules[i];
+        [out appendFormat:@"  %ld: %@ \"%@\" 触发:%@\n", (long)i+1, rule[@"buttonClass"], rule[@"buttonTextPattern"], rule[@"triggerType"]];
     }
+    
+    [out appendFormat:@"\n📋 自定义规则 (%lu条):\n", (unsigned long)customRules.count];
+    for (NSInteger i = 0; i < customRules.count; i++) {
+        NSDictionary *rule = customRules[i];
+        [out appendFormat:@"  %ld: %@ → %@.%@\n", (long)i+1, rule[@"targetView"], rule[@"keyPath"], rule[@"methodName"]];
+    }
+    [out appendString:@"\n💡 点击\"+ 添加规则\"添加预设规则\n"];
+    
+    [self showLog:out];
 }
 
 - (void)forceShow {
@@ -352,7 +354,6 @@ static void showToast(NSString *message) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *hostWindow = getKeyWindow();
         if (!hostWindow) return;
-
         UIView *toast = [[UIView alloc] init];
         toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
         toast.layer.cornerRadius = 12;
@@ -369,12 +370,7 @@ static void showToast(NSString *message) {
         toast.frame = CGRectMake(center.x - w/2, center.y - h/2, w, h);
         toast.layer.zPosition = CGFLOAT_MAX;
         [hostWindow addSubview:toast];
-
-        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
-            toast.alpha = 0;
-        } completion:^(BOOL finished) {
-            [toast removeFromSuperview];
-        }];
+        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{ toast.alpha = 0; } completion:^(BOOL finished) { [toast removeFromSuperview]; }];
     });
 }
 
@@ -429,168 +425,141 @@ static void saveRule(NSDictionary *rule) {
     NSInteger existingIndex = -1;
     for (NSInteger i = 0; i < existing.count; i++) {
         NSDictionary *r = existing[i];
-        if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] &&
-            [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] &&
-            [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) {
-            existingIndex = i;
-            break;
-        }
+        if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] && [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] && [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) { existingIndex = i; break; }
     }
     NSMutableArray *newRules = [existing mutableCopy];
-    if (existingIndex >= 0) {
-        [newRules replaceObjectAtIndex:existingIndex withObject:rule];
-        showToast(@"🔄 规则已更新");
-    } else {
-        [newRules addObject:rule];
-        showToast([NSString stringWithFormat:@"✅ 已学习：%@", rule[@"buttonTextPattern"]]);
-    }
-    [ud setObject:newRules forKey:kRulesKey];
-    [ud synchronize];
+    if (existingIndex >= 0) { [newRules replaceObjectAtIndex:existingIndex withObject:rule]; showToast(@"🔄 规则已更新"); }
+    else { [newRules addObject:rule]; showToast([NSString stringWithFormat:@"✅ 已学习：%@", rule[@"buttonTextPattern"]]); }
+    [ud setObject:newRules forKey:kRulesKey]; [ud synchronize];
 }
 
 static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
-    if ([root isKindOfClass:[AdInspectorPanel class]] || 
-        [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"]) {
-        return nil;
-    }
-    NSString *targetClass = rule[@"buttonClass"];
-    NSString *textPattern = rule[@"buttonTextPattern"];
-    NSArray *chain = rule[@"hierarchyChain"];
-
+    if ([root isKindOfClass:[AdInspectorPanel class]] || [NSStringFromClass([root.window class]) isEqualToString:@"AdInspectorWindow"]) return nil;
+    NSString *targetClass = rule[@"buttonClass"]; NSString *textPattern = rule[@"buttonTextPattern"]; NSArray *chain = rule[@"hierarchyChain"];
     if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
         NSString *currentText = nil;
         if ([root isKindOfClass:[UIButton class]]) currentText = [(UIButton *)root titleForState:UIControlStateNormal];
         else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
         else currentText = root.accessibilityLabel;
-
         if (currentText) {
-            BOOL textMatches = NO;
-            if (textPattern.length <= 2) {
-                textMatches = [currentText isEqualToString:textPattern];
-            } else {
-                textMatches = ([currentText rangeOfString:textPattern].location != NSNotFound && currentText.length <= 15);
-            }
+            BOOL textMatches = (textPattern.length <= 2) ? [currentText isEqualToString:textPattern] : ([currentText rangeOfString:textPattern].location != NSNotFound && currentText.length <= 15);
             if (textMatches) {
-                NSMutableArray *currentChain = [NSMutableArray array];
-                UIView *cur = root;
-                while (cur && ![cur isKindOfClass:[UIWindow class]]) {
-                    [currentChain addObject:NSStringFromClass([cur class])];
-                    cur = cur.superview;
-                }
+                NSMutableArray *currentChain = [NSMutableArray array]; UIView *cur = root;
+                while (cur && ![cur isKindOfClass:[UIWindow class]]) { [currentChain addObject:NSStringFromClass([cur class])]; cur = cur.superview; }
                 if ([currentChain isEqualToArray:chain]) return root;
             }
         }
     }
-    for (UIView *sub in root.subviews) {
-        UIView *found = findMatchingView(sub, rule);
-        if (found) return found;
-    }
+    for (UIView *sub in root.subviews) { UIView *found = findMatchingView(sub, rule); if (found) return found; }
     return nil;
 }
 
-static void clearAllRules(void) {
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; [[NSUserDefaults standardUserDefaults] synchronize]; }
+
+// ==================== 自定义规则管理 ====================
+static void saveCustomRule(NSDictionary *rule) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *existing = [ud arrayForKey:kCustomRulesKey] ?: @[];
+    // 去重
+    for (NSDictionary *r in existing) {
+        if ([r[@"targetView"] isEqualToString:rule[@"targetView"]] && [r[@"keyPath"] isEqualToString:rule[@"keyPath"]] && [r[@"methodName"] isEqualToString:rule[@"methodName"]]) return;
+    }
+    NSMutableArray *newRules = [existing mutableCopy];
+    [newRules addObject:rule];
+    [ud setObject:newRules forKey:kCustomRulesKey];
+    [ud synchronize];
+}
+
+static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; [[NSUserDefaults standardUserDefaults] synchronize]; }
+
+static id getObjectByKeyPath(id object, NSString *keyPath) {
+    if ([keyPath isEqualToString:@"self"]) return object;
+    NSArray *keys = [keyPath componentsSeparatedByString:@"."];
+    id current = object;
+    for (NSString *key in keys) { if (!current) return nil; current = [current valueForKey:key]; }
+    return current;
+}
+
+static UIView *findViewOfClass(UIView *root, NSString *className) {
+    if ([NSStringFromClass([root class]) isEqualToString:className]) return root;
+    for (UIView *sub in root.subviews) { UIView *found = findViewOfClass(sub, className); if (found) return found; }
+    return nil;
+}
+
+static void applyCustomRules(void) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *customRules = [ud arrayForKey:kCustomRulesKey];
+    if (!customRules.count) return;
+    
+    for (NSDictionary *rule in customRules) {
+        NSString *targetViewClass = rule[@"targetView"];
+        NSString *keyPath = rule[@"keyPath"];
+        NSString *methodName = rule[@"methodName"];
+        if (!targetViewClass || !keyPath || !methodName) continue;
+        
+        for (UIWindow *window in getAllWindows()) {
+            if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
+            UIView *targetView = findViewOfClass(window, targetViewClass);
+            if (targetView) {
+                id target = getObjectByKeyPath(targetView, keyPath);
+                if (target) {
+                    SEL method = NSSelectorFromString(methodName);
+                    if ([target respondsToSelector:method]) {
+                        // 判断方法签名：有参数 vs 无参数
+                        NSMethodSignature *sig = [target methodSignatureForSelector:method];
+                        if (sig.numberOfArguments <= 2) { // 无参数
+                            ((void (*)(id, SEL))objc_msgSend)(target, method);
+                        } else { // 带一个参数
+                            ((void (*)(id, SEL, id))objc_msgSend)(target, method, nil);
+                        }
+                        showToast([NSString stringWithFormat:@"✅ 自定义规则: %@", rule[@"description"]]);
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ==================== 强制移除广告视图 ====================
 static void forceRemoveAdView(UIView *view) {
     if (!view) return;
-    
     NSArray *adClassNames = @[@"GDTSplashDLView", @"CSJSplashView", @"GDTDLRootView"];
-    
     UIView *container = view;
     while (container && ![container isKindOfClass:[UIWindow class]]) {
-        for (NSString *className in adClassNames) {
-            if ([NSStringFromClass([container class]) isEqualToString:className]) {
-                if (container.superview) {
-                    [container removeFromSuperview];
-                    showToast(@"⏩ 已移除广告容器");
-                    return;
-                }
-            }
-        }
+        for (NSString *className in adClassNames) { if ([NSStringFromClass([container class]) isEqualToString:className]) { if (container.superview) { [container removeFromSuperview]; showToast(@"⏩ 已移除广告容器"); return; } } }
         container = container.superview;
     }
-    
     UIView *cur = view;
     while (cur && ![cur isKindOfClass:[UIWindow class]]) {
-        if ([cur.superview isKindOfClass:[UIWindow class]] || 
-            [cur.superview isKindOfClass:NSClassFromString(@"UITransitionView")]) {
-            [cur removeFromSuperview];
-            showToast(@"⏩ 已移除广告视图");
-            return;
-        }
+        if ([cur.superview isKindOfClass:[UIWindow class]] || [cur.superview isKindOfClass:NSClassFromString(@"UITransitionView")]) { [cur removeFromSuperview]; showToast(@"⏩ 已移除广告视图"); return; }
         cur = cur.superview;
     }
-    
     UIWindow *adWindow = view.window;
-    if (adWindow && ![NSStringFromClass([adWindow class]) isEqualToString:@"AdInspectorWindow"]) {
-        adWindow.hidden = YES;
-        showToast(@"⏩ 已强制关闭广告窗口");
-    }
-}
-
-// ==================== 调用onDestroy关闭广告 ====================
-static BOOL callOnDestroy(UIView *view) {
-    UIView *rootView = view;
-    while (rootView && ![NSStringFromClass([rootView class]) isEqualToString:@"GDTDLRootView"]) {
-        rootView = [rootView superview];
-    }
-    if (!rootView) return NO;
-    id delegate = [rootView valueForKey:@"delegate"];
-    if (!delegate) return NO;
-    if ([delegate respondsToSelector:NSSelectorFromString(@"onDestroy")]) {
-        ((void (*)(id, SEL))objc_msgSend)(delegate, NSSelectorFromString(@"onDestroy"));
-        return YES;
-    }
-    return NO;
+    if (adWindow && ![NSStringFromClass([adWindow class]) isEqualToString:@"AdInspectorWindow"]) { adWindow.hidden = YES; showToast(@"⏩ 已强制关闭广告窗口"); }
 }
 
 // ==================== 跳过引擎 ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
-    if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
-        [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) {
-        return;
-    }
-
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) return;
     NSString *triggerType = rule[@"triggerType"];
-
     if ([triggerType isEqualToString:@"controlEvent"]) {
-        if ([view isKindOfClass:[UIControl class]]) {
-            [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
-            showToast(@"⏩ 已自动跳过");
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (view && !view.hidden && view.superview) forceRemoveAdView(view);
-            });
-            return;
-        }
+        if ([view isKindOfClass:[UIControl class]]) { [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]]; showToast(@"⏩ 已自动跳过"); dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (view && !view.hidden && view.superview) forceRemoveAdView(view); }); return; }
     }
-
-    if ([triggerType isEqualToString:@"gesture"]) {
-        if (callOnDestroy(view)) {
-            showToast(@"⏩ 已调用onDestroy关闭广告");
-            return;
-        }
-    }
-
-    forceRemoveAdView(view);
-    showToast(@"⏩ 已强制关闭广告");
+    if ([triggerType isEqualToString:@"gesture"]) { applyCustomRules(); forceRemoveAdView(view); showToast(@"⏩ 已强制关闭广告"); return; }
+    forceRemoveAdView(view); showToast(@"⏩ 已强制关闭广告");
 }
 
 // ==================== 自动跳过扫描 ====================
 static void applyAllSavedRules(void) {
+    applyCustomRules();
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *rules = [ud arrayForKey:kRulesKey];
-    if (!rules.count) return;
+    NSArray *rules = [ud arrayForKey:kRulesKey]; if (!rules.count) return;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in [(UIWindowScene *)scene windows]) {
             if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) continue;
-            for (NSDictionary *rule in rules) {
-                UIView *matched = findMatchingView(window, rule);
-                if (matched && !matched.hidden && matched.alpha > 0) { triggerSkip(matched, rule); return; }
-            }
+            for (NSDictionary *rule in rules) { UIView *matched = findMatchingView(window, rule); if (matched && !matched.hidden && matched.alpha > 0) { triggerSkip(matched, rule); return; } }
         }
     }
 }
@@ -598,13 +567,10 @@ static void applyAllSavedRules(void) {
 // ==================== 按钮识别 ====================
 static BOOL isSkipText(NSString *text) {
     if (!text || text.length == 0) return NO;
-    NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"];
-    for (NSString *keyword in keywords) {
-        if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound && text.length <= 15) return YES;
-    }
+    NSArray *keywords = @[@"跳过",@"广告",@"关闭",@"×",@"x",@"X",@"close",@"skip"];
+    for (NSString *keyword in keywords) { if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound && text.length <= 15) return YES; }
     return NO;
 }
-
 static UIView *findSkipLabelInView(UIView *root) {
     if ([root isKindOfClass:[AdInspectorPanel class]]) return nil;
     NSString *currentText = nil;
@@ -619,151 +585,48 @@ static UIView *findSkipLabelInView(UIView *root) {
 // ==================== 核心分析 ====================
 static void analyzeTouchView(UIView *view, CGPoint point) {
     if (!view) return;
-    if ([view isDescendantOfView:[AdInspectorPanel shared]] || 
-        [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) return;
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] || [NSStringFromClass([view.window class]) isEqualToString:@"AdInspectorWindow"]) return;
     NSDate *now = [NSDate date];
     if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
     s_lastAnalysisTime = now;
     UIView *actualView = findSkipLabelInView(view);
     if (!actualView) { showToast(@"⚠️ 未检测到跳过按钮，学习失败"); return; }
-
     @try {
-        UIWindow *adWindow = actualView.window;
-        NSString *windowClass = adWindow ? NSStringFromClass([adWindow class]) : @"未知";
+        UIWindow *adWindow = actualView.window; NSString *windowClass = adWindow ? NSStringFromClass([adWindow class]) : @"未知";
         NSMutableString *out = [NSMutableString string];
         [out appendFormat:@"\n══════ %@ ══════\n", [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
-        NSMutableArray *chainArray = [NSMutableArray array];
-        UIView *cur = actualView;
+        NSMutableArray *chainArray = [NSMutableArray array]; UIView *cur = actualView;
         while (cur && ![cur isKindOfClass:[UIWindow class]]) { [chainArray addObject:NSStringFromClass([cur class])]; cur = cur.superview; }
         NSString *containerClass = chainArray.count >= 2 ? chainArray[1] : nil;
-
-        [out appendString:@"📊 视图层级链:\n"];
-        cur = actualView; int depth = 0;
+        [out appendString:@"📊 视图层级链:\n"]; cur = actualView; int depth = 0;
         while (cur && depth < 15) {
             NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@" " startingAtIndex:0];
             [out appendFormat:@"%@▸ %@", indent, NSStringFromClass([cur class])];
-            NSMutableArray *tags = [NSMutableArray array];
-            if (cur.tag != 0) [tags addObject:[NSString stringWithFormat:@"tag:%ld", (long)cur.tag]];
+            NSMutableArray *tags = [NSMutableArray array]; if (cur.tag != 0) [tags addObject:[NSString stringWithFormat:@"tag:%ld", (long)cur.tag]];
             if ([cur isKindOfClass:[UIButton class]]) { NSString *t = [(UIButton *)cur titleForState:UIControlStateNormal]; if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]]; }
             if ([cur isKindOfClass:[UILabel class]]) { NSString *t = [(UILabel *)cur text] ?: [(UILabel *)cur attributedText].string; if (t.length > 20) t = [[t substringToIndex:20] stringByAppendingString:@"..."]; if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]]; }
             if (cur.accessibilityLabel.length) [tags addObject:[NSString stringWithFormat:@"a11y:\"%@\"", cur.accessibilityLabel]];
             if (tags.count) [out appendFormat:@" [%@]", [tags componentsJoinedByString:@", "]];
-            [out appendFormat:@"\n%@  %@\n", indent, NSStringFromCGRect(cur.frame)];
-            cur = cur.superview; depth++;
+            [out appendFormat:@"\n%@  %@\n", indent, NSStringFromCGRect(cur.frame)]; cur = cur.superview; depth++;
         }
-
-        [out appendString:@"\n🎯 Target-Action & 手势:\n"];
-        BOOL found = NO;
-        NSMutableArray *taInfo = [NSMutableArray array];
-        cur = actualView; depth = 0;
+        [out appendString:@"\n🎯 Target-Action & 手势:\n"]; BOOL found = NO; NSMutableArray *taInfo = [NSMutableArray array]; cur = actualView; depth = 0;
         while (cur && depth < 8) {
-            if ([cur isKindOfClass:[UIControl class]]) {
-                UIControl *c = (UIControl *)cur;
-                for (id tgt in c.allTargets) {
-                    UIControlEvents checkEvents[] = {UIControlEventTouchUpInside, UIControlEventTouchDown, UIControlEventValueChanged, UIControlEventPrimaryActionTriggered};
-                    for (int i = 0; i < 4; i++) {
-                        NSArray *acts = [c actionsForTarget:tgt forControlEvent:checkEvents[i]];
-                        if (acts.count) {
-                            found = YES;
-                            [out appendFormat:@"  [%@] → %@.%@ (%@)\n", NSStringFromClass([cur class]), NSStringFromClass([tgt class]), acts[0], getControlEventName(checkEvents[i])];
-                            [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]), @"targetClass":NSStringFromClass([tgt class]), @"action":acts[0], @"event":@(checkEvents[i])}];
-                        }
-                    }
-                }
-            }
-            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
-                found = YES;
-                [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView];
-                BOOL gotTargetInfo = NO;
-                @try {
-                    NSArray *tgts = [gr valueForKey:@"_targets"];
-                    if (tgts && [tgts isKindOfClass:[NSArray class]]) {
-                        for (id t in tgts) {
-                            id target = [t valueForKey:@"_target"]; id actionObj = [t valueForKey:@"_action"];
-                            NSString *actionStr = nil;
-                            if ([actionObj isKindOfClass:[NSString class]]) actionStr = actionObj;
-                            else if ([actionObj isKindOfClass:[NSValue class]]) actionStr = NSStringFromSelector((SEL)[actionObj pointerValue]);
-                            if (target && actionStr) {
-                                [out appendFormat:@"    → %@.%@\n", NSStringFromClass([target class]), actionStr];
-                                [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]), @"gestureClass":NSStringFromClass([gr class]), @"targetClass":NSStringFromClass([target class]), @"action":actionStr}];
-                                gotTargetInfo = YES;
-                            }
-                        }
-                    }
-                } @catch (NSException *e) {}
-                if (!gotTargetInfo) {
-                    id targets = ATGetObjectIvar(gr, "_targets");
-                    if (targets && [targets isKindOfClass:[NSArray class]]) {
-                        for (id t in targets) {
-                            id target = ATGetObjectIvar(t, "_target"); SEL action = ATGetSelectorIvar(t, "_action");
-                            if (target && action) {
-                                NSString *actionStr = NSStringFromSelector(action);
-                                [out appendFormat:@"    → %@.%@ (通过Ivar)\n", NSStringFromClass([target class]), actionStr];
-                                [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]), @"gestureClass":NSStringFromClass([gr class]), @"targetClass":NSStringFromClass([target class]), @"action":actionStr}];
-                                gotTargetInfo = YES;
-                            }
-                        }
-                    }
-                }
-                if (!gotTargetInfo) [out appendString:@"    (无法提取 target/action，将使用备用规则)\n"];
-            }
-            cur = cur.superview; depth++;
+            if ([cur isKindOfClass:[UIControl class]]) { UIControl *c = (UIControl *)cur; for (id tgt in c.allTargets) { UIControlEvents checkEvents[] = {UIControlEventTouchUpInside,UIControlEventTouchDown,UIControlEventValueChanged,UIControlEventPrimaryActionTriggered}; for (int i=0;i<4;i++) { NSArray *acts = [c actionsForTarget:tgt forControlEvent:checkEvents[i]]; if (acts.count) { found=YES; [out appendFormat:@"  [%@] → %@.%@ (%@)\n", NSStringFromClass([cur class]), NSStringFromClass([tgt class]), acts[0], getControlEventName(checkEvents[i])]; [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]),@"targetClass":NSStringFromClass([tgt class]),@"action":acts[0],@"event":@(checkEvents[i])}]; } } } }
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) { found=YES; [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView]; BOOL gotTargetInfo=NO; @try { NSArray *tgts=[gr valueForKey:@"_targets"]; if (tgts&&[tgts isKindOfClass:[NSArray class]]) { for (id t in tgts) { id target=[t valueForKey:@"_target"]; id actionObj=[t valueForKey:@"_action"]; NSString *actionStr=nil; if ([actionObj isKindOfClass:[NSString class]]) actionStr=actionObj; else if ([actionObj isKindOfClass:[NSValue class]]) actionStr=NSStringFromSelector((SEL)[actionObj pointerValue]); if (target&&actionStr) { [out appendFormat:@"    → %@.%@\n", NSStringFromClass([target class]), actionStr]; [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]),@"gestureClass":NSStringFromClass([gr class]),@"targetClass":NSStringFromClass([target class]),@"action":actionStr}]; gotTargetInfo=YES; } } } } @catch(NSException *e){} if (!gotTargetInfo) { id targets=ATGetObjectIvar(gr,"_targets"); if (targets&&[targets isKindOfClass:[NSArray class]]) { for (id t in targets) { id target=ATGetObjectIvar(t,"_target"); SEL action=ATGetSelectorIvar(t,"_action"); if (target&&action) { NSString *actionStr=NSStringFromSelector(action); [out appendFormat:@"    → %@.%@ (通过Ivar)\n", NSStringFromClass([target class]), actionStr]; [taInfo addObject:@{@"viewClass":NSStringFromClass([cur class]),@"gestureClass":NSStringFromClass([gr class]),@"targetClass":NSStringFromClass([target class]),@"action":actionStr}]; gotTargetInfo=YES; } } } } if (!gotTargetInfo) [out appendString:@"    (无法提取 target/action，将使用备用规则)\n"]; }
+            cur=cur.superview; depth++;
         }
         if (!found) [out appendString:@"  (未检测到绑定)\n"];
-
-        [out appendFormat:@"\n🔍 诊断信息:\n  广告窗口: %@\n", windowClass];
-        [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])];
-        [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)];
-        [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(actualView.bounds)];
-        [out appendFormat:@"  userInteraction:%d hidden:%d alpha:%.2f\n", actualView.userInteractionEnabled, actualView.hidden, actualView.alpha];
-        [out appendString:@"══════════════════════════\n"];
-
+        [out appendFormat:@"\n🔍 诊断信息:\n  广告窗口: %@\n", windowClass]; [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])]; [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)]; [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(actualView.bounds)]; [out appendFormat:@"  userInteraction:%d hidden:%d alpha:%.2f\n", actualView.userInteractionEnabled, actualView.hidden, actualView.alpha]; [out appendString:@"══════════════════════════\n"];
         [[AdInspectorPanel shared] showLog:out]; saveToFile(out); highlightView(actualView);
-
-        NSString *buttonText = nil;
-        if ([actualView isKindOfClass:[UIButton class]]) buttonText = [(UIButton *)actualView titleForState:UIControlStateNormal];
-        else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text] ?: [(UILabel *)actualView attributedText].string;
-        if (buttonText.length == 0) buttonText = actualView.accessibilityLabel;
-        if (buttonText.length == 0) { showToast(@"⚠️ 按钮无文字，学习失败"); return; }
-
-        NSMutableDictionary *rule = [NSMutableDictionary dictionary];
-        rule[@"buttonClass"] = NSStringFromClass([actualView class]);
-        rule[@"buttonTextPattern"] = buttonText;
-        rule[@"hierarchyChain"] = chainArray;
-        if (containerClass) rule[@"containerClass"] = containerClass;
-        if (windowClass) rule[@"windowClass"] = windowClass;
-
-        for (NSDictionary *info in taInfo) {
-            if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
-                rule[@"triggerType"] = @"controlEvent"; rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
-                rule[@"targetClass"] = info[@"targetClass"]; rule[@"actionSelector"] = info[@"action"]; break;
-            }
-        }
-        if (!rule[@"triggerType"]) {
-            for (NSDictionary *info in taInfo) {
-                if (info[@"gestureClass"] && info[@"targetClass"] && info[@"action"]) {
-                    rule[@"triggerType"] = @"gesture"; rule[@"gestureClass"] = info[@"gestureClass"];
-                    rule[@"targetClass"] = info[@"targetClass"]; rule[@"actionSelector"] = info[@"action"];
-                    rule[@"gestureViewClass"] = info[@"viewClass"]; break;
-                }
-            }
-        }
-        if (!rule[@"triggerType"]) {
-            cur = actualView;
-            while (cur) {
-                for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
-                    rule[@"triggerType"] = @"gesture"; rule[@"gestureClass"] = NSStringFromClass([gr class]);
-                    rule[@"gestureViewClass"] = NSStringFromClass([cur class]); break;
-                }
-                if (rule[@"triggerType"]) break;
-                cur = cur.superview;
-            }
-        }
-        if (!rule[@"triggerType"] && [actualView isKindOfClass:[UIControl class]]) {
-            rule[@"triggerType"] = @"controlEvent"; rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
-        }
-        if (rule[@"triggerType"]) saveRule(rule);
-        else showToast(@"❌ 无法学习触发方式");
+        NSString *buttonText=nil; if ([actualView isKindOfClass:[UIButton class]]) buttonText=[(UIButton *)actualView titleForState:UIControlStateNormal]; else if ([actualView isKindOfClass:[UILabel class]]) buttonText=[(UILabel *)actualView text]?:[(UILabel *)actualView attributedText].string;
+        if (buttonText.length==0) buttonText=actualView.accessibilityLabel;
+        if (buttonText.length==0) { showToast(@"⚠️ 按钮无文字，学习失败"); return; }
+        NSMutableDictionary *rule=[NSMutableDictionary dictionary]; rule[@"buttonClass"]=NSStringFromClass([actualView class]); rule[@"buttonTextPattern"]=buttonText; rule[@"hierarchyChain"]=chainArray; if (containerClass) rule[@"containerClass"]=containerClass; if (windowClass) rule[@"windowClass"]=windowClass;
+        for (NSDictionary *info in taInfo) { if (info[@"event"]&&[info[@"event"] unsignedIntegerValue]==UIControlEventTouchUpInside) { rule[@"triggerType"]=@"controlEvent"; rule[@"controlEvent"]=@(UIControlEventTouchUpInside); rule[@"targetClass"]=info[@"targetClass"]; rule[@"actionSelector"]=info[@"action"]; break; } }
+        if (!rule[@"triggerType"]) { for (NSDictionary *info in taInfo) { if (info[@"gestureClass"]&&info[@"targetClass"]&&info[@"action"]) { rule[@"triggerType"]=@"gesture"; rule[@"gestureClass"]=info[@"gestureClass"]; rule[@"targetClass"]=info[@"targetClass"]; rule[@"actionSelector"]=info[@"action"]; rule[@"gestureViewClass"]=info[@"viewClass"]; break; } } }
+        if (!rule[@"triggerType"]) { cur=actualView; while (cur) { for (UIGestureRecognizer *gr in cur.gestureRecognizers) { rule[@"triggerType"]=@"gesture"; rule[@"gestureClass"]=NSStringFromClass([gr class]); rule[@"gestureViewClass"]=NSStringFromClass([cur class]); break; } if (rule[@"triggerType"]) break; cur=cur.superview; } }
+        if (!rule[@"triggerType"]&&[actualView isKindOfClass:[UIControl class]]) { rule[@"triggerType"]=@"controlEvent"; rule[@"controlEvent"]=@(UIControlEventTouchUpInside); }
+        if (rule[@"triggerType"]) saveRule(rule); else showToast(@"❌ 无法学习触发方式");
     } @catch (NSException *e) { showToast(@"⚠️ 分析异常"); }
 }
 
@@ -773,40 +636,8 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
     %orig;
     if (event.type == UIEventTypeTouches) {
         NSSet *touches = [event allTouches];
-        UITouch *touch = [touches anyObject];
-        CGPoint currentPoint = [touch locationInView:nil];
-
-        if (touches.count == 1) {
-            if (touch.phase == UITouchPhaseBegan) {
-                s_panStartPoint = currentPoint;
-                s_isPanningDown = NO;
-            } else if (touch.phase == UITouchPhaseMoved) {
-                CGFloat deltaY = currentPoint.y - s_panStartPoint.y;
-                if (deltaY > kSwipeDownThreshold && !s_isPanningDown) {
-                    s_isPanningDown = YES;
-                    pauseAdAnimations();
-                }
-            } else if (touch.phase == UITouchPhaseEnded) {
-                if (s_isPanningDown) {
-                    s_isPanningDown = NO;
-                } else if (touch.view && !s_twoFingerStart) {
-                    if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) {
-                        analyzeTouchView(touch.view, [touch locationInView:nil]);
-                    }
-                }
-            }
-        }
-
-        if (touches.count >= 2) {
-            BOOL allStationary = YES;
-            for (UITouch *t in touches) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { allStationary = NO; break; } }
-            if (allStationary && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
-            if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
-                AdInspectorPanel *panel = [AdInspectorPanel shared];
-                if (panel.hidden) [panel forceShow];
-                s_twoFingerStart = nil; s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
-            }
-        } else { s_twoFingerStart = nil; }
+        if (touches.count >= 2) { BOOL allStationary=YES; for (UITouch *t in touches) { if (t.phase==UITouchPhaseEnded||t.phase==UITouchPhaseCancelled) { allStationary=NO; break; } } if (allStationary&&!s_twoFingerStart) s_twoFingerStart=[NSDate date]; if (s_twoFingerStart&&[[NSDate date] timeIntervalSinceDate:s_twoFingerStart]>=kTwoFingerHoldDuration) { AdInspectorPanel *panel=[AdInspectorPanel shared]; if (panel.hidden) [panel forceShow]; s_twoFingerStart=nil; s_ignoreSingleTouchUntil=[NSDate dateWithTimeIntervalSinceNow:0.5]; } } else { s_twoFingerStart=nil; }
+        if (touches.count == 1) { UITouch *touch=[touches anyObject]; if (touch.phase==UITouchPhaseEnded&&touch.view&&!s_twoFingerStart) { if (!s_ignoreSingleTouchUntil||[[NSDate date] compare:s_ignoreSingleTouchUntil]!=NSOrderedAscending) { analyzeTouchView(touch.view,[touch locationInView:nil]); } } }
     }
 }
 %end
@@ -822,11 +653,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *activeScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)scene; break;
-            }
-        }
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) { if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) { activeScene = (UIWindowScene *)scene; break; } }
         if (activeScene) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
             s_floatWindow.windowScene = activeScene;
@@ -836,8 +663,7 @@ static void analyzeTouchView(UIView *view, CGPoint point) {
             [s_floatWindow addSubview:panel];
             s_floatWindow.panel = panel; s_floatWindow.hidden = NO;
         }
-
-        showToast(@"🔍 已激活 | 下滑暂停广告 | Flexing自动置顶");
+        showToast(@"🔍 已激活 | 双指呼面板 | 自定义规则");
         if (isFlexingAvailable()) raiseFlexingWindow();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             applyAllSavedRules();
