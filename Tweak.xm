@@ -42,16 +42,6 @@ static Ivar ATFindIvar(Class cls, const char *name)
     return NULL;
 }
 
-static id ATGetObjectIvar(id obj, const char *name)
-{
-    Ivar ivar = ATFindIvar(object_getClass(obj), name);
-    if (!ivar)
-    {
-        return NULL;
-    }
-    return object_getIvar(obj, ivar);
-}
-
 static SEL ATGetSelectorIvar(id obj, const char *name)
 {
     Ivar ivar = ATFindIvar(object_getClass(obj), name);
@@ -339,13 +329,6 @@ static UIWindow *getKeyWindow(void)
     return nil;
 }
 
-// ==================== Hook GDTDLBusinessManager 全部方法 ====================
-static void logBusinessManagerMethodCall(id self, SEL _cmd)
-{
-    NSString *methodName = NSStringFromSelector(_cmd);
-    recordMethodCall(methodName);
-}
-
 // ==================== 悬浮窗 ====================
 @class AdInspectorPanel;
 
@@ -452,7 +435,6 @@ static AdInspectorWindow *s_floatWindow = nil;
         t.tag = 1001;
         [self addSubview:t];
 
-        // 复制按钮
         UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         copyBtn.frame = CGRectMake(self.bounds.size.width - 235, 3, 55, 30);
         [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal];
@@ -555,7 +537,6 @@ static AdInspectorWindow *s_floatWindow = nil;
         [trkBtn addTarget:self action:@selector(toggleTracking:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:trkBtn];
 
-        // 深度追踪按钮
         UIButton *deepBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         deepBtn.frame = CGRectMake(110, 160, 100, 30);
         [deepBtn setTitle:@"🔬深度追踪" forState:UIControlStateNormal];
@@ -766,13 +747,12 @@ static AdInspectorWindow *s_floatWindow = nil;
         [sender setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.7 alpha:1.0] forState:UIControlStateNormal];
         if (methods.count > 0)
         {
-            NSMutableString *o = [NSMutableString stringWithFormat:@"\n🔬 深度追踪结果 (%lu个 GDTDLBusinessManager 方法):\n", (unsigned long)methods.count];
+            NSMutableString *o = [NSMutableString stringWithFormat:@"\n🔬 深度追踪结果 (%lu个方法):\n", (unsigned long)methods.count];
             for (NSDictionary *e in methods)
             {
                 [o appendFormat:@"  +%.3fs → %@\n", [e[@"time"] doubleValue], e[@"method"]];
             }
             [self showLog:o];
-            // 自动填入第一个方法作为候选
             if (methods.count > 0)
             {
                 NSDictionary *first = methods[0];
@@ -782,7 +762,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         }
         else
         {
-            [self showLog:@"\n⚠️ 深度追踪未捕获到 GDTDLBusinessManager 方法调用\n"];
+            [self showLog:@"\n⚠️ 深度追踪未捕获到方法调用\n"];
         }
     }
     else
@@ -1177,8 +1157,6 @@ static void applyCustomRules(void)
             UIView *tv = findViewOfClass(w, tvc);
             if (!tv)
             {
-                // 不是视图类，尝试直接查找对象
-                // 通过 findViewOfClass 找不到就尝试在所有窗口的 rootViewController 里找
                 continue;
             }
             id tg = getObjectByKeyPath(tv, kp);
@@ -1540,17 +1518,14 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
     %orig;
     if (state == UIGestureRecognizerStateEnded)
     {
-        // 获取手势所在 view
         UIView *view = self.view;
         if (!view)
         {
             return;
         }
-        // 检查这个 view 是不是跳过按钮
         UIView *skipView = findSkipLabelInView(view);
         if (!skipView)
         {
-            // 也检查父视图
             UIView *parent = view.superview;
             while (parent && ![parent isKindOfClass:[UIWindow class]])
             {
@@ -1569,7 +1544,6 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
             [log appendFormat:@"\n🔔 手势触发! 手势:%@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
             [log appendFormat:@"📚 调用栈:\n%@\n", callStack];
 
-            // 输出手势的 target 信息
             @try
             {
                 id targets = [self valueForKey:@"_targets"];
@@ -1609,7 +1583,6 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
 %end
 
 // ==================== Hook GDTDLBusinessManager 全部方法 ====================
-// 动态 hook 所有实例方法
 static void hookAllMethodsOfClass(Class cls)
 {
     unsigned int methodCount = 0;
@@ -1618,7 +1591,6 @@ static void hookAllMethodsOfClass(Class cls)
     {
         SEL sel = method_getName(methods[i]);
         NSString *methodName = NSStringFromSelector(sel);
-        // 跳过 .cxx_destruct 和一些基本方法
         if ([methodName hasPrefix:@"."] ||
             [methodName hasPrefix:@"init"] ||
             [methodName isEqualToString:@"dealloc"] ||
@@ -1634,16 +1606,12 @@ static void hookAllMethodsOfClass(Class cls)
         {
             continue;
         }
-        // 获取方法签名
         const char *typeEncoding = method_getTypeEncoding(methods[i]);
-        // 只 hook 返回 void 的无参或单参方法
         if (typeEncoding && typeEncoding[0] == 'v')
         {
-            // 替换为日志记录实现
             IMP originalIMP = method_getImplementation(methods[i]);
-            // 使用 block 创建新 IMP
+            __weak id weakSelf = nil;
             id newBlock = ^(id self) {
-                // 先调用原始实现
                 if (originalIMP)
                 {
                     ((void (*)(id, SEL))originalIMP)(self, sel);
@@ -1743,7 +1711,6 @@ static void hookAllMethodsOfClass(Class cls)
             s_floatWindow.hidden = NO;
         }
 
-        // Hook GDTDLBusinessManager 的所有方法
         Class bmClass = NSClassFromString(@"GDTDLBusinessManager");
         if (bmClass)
         {
@@ -1753,7 +1720,6 @@ static void hookAllMethodsOfClass(Class cls)
         else
         {
             NSLog(@"[AdInspector] ⚠️ GDTDLBusinessManager 类未找到，延迟重试");
-            // 延迟重试
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 Class bmClass2 = NSClassFromString(@"GDTDLBusinessManager");
                 if (bmClass2)
