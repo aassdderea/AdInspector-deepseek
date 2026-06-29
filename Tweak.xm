@@ -235,7 +235,11 @@ static AdInspectorWindow *s_floatWindow = nil;
     }
 }
 
-- (void)clearRulesTapped { clearAllRules(); [self showLog:@"\n🗑️ 已清空所有学习规则\n"]; showToast(@"🗑️ 规则已清除"); }
+- (void)clearRulesTapped { 
+    clearAllRules(); 
+    [self showLog:@"\n🗑️ 已清空所有学习规则\n"]; 
+    showToast(@"🗑️ 规则已清除"); 
+}
 
 - (void)viewRulesTapped {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -256,30 +260,236 @@ static AdInspectorWindow *s_floatWindow = nil;
     }
 }
 
-- (void)forceShow { /* 与之前相同 */ }
-- (void)showLog:(NSString *)log { /* 与之前相同 */ }
+- (void)forceShow {
+    if (!s_floatWindow) {
+        UIWindowScene *activeScene = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                activeScene = (UIWindowScene *)scene; break;
+            }
+        }
+        if (activeScene) {
+            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:activeScene.coordinateSpace.bounds];
+            s_floatWindow.windowScene = activeScene;
+            [s_floatWindow addSubview:self];
+            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            s_floatWindow.panel = self; s_floatWindow.hidden = NO;
+        }
+    } else {
+        if (!self.superview) {
+            [s_floatWindow addSubview:self];
+            self.frame = CGRectMake(5, 160, s_floatWindow.bounds.size.width - 10, 280);
+            self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            s_floatWindow.panel = self;
+        }
+        s_floatWindow.hidden = NO; s_floatWindow.alpha = 1.0;
+        [s_floatWindow bringSubviewToFront:self];
+    }
+    self.hidden = NO; self.alpha = 1.0;
+    showToast(@"👆 面板已呼出");
+    [self viewRulesTapped];
+}
+
+- (void)showLog:(NSString *)log {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.logBuffer appendString:log];
+        if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)];
+        self.logTextView.text = self.logBuffer;
+        if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)];
+    });
+}
 @end
 
 // ==================== Toast ====================
-static void showToast(NSString *message) { /* 与之前相同 */ }
+static void showToast(NSString *message) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *hostWindow = getKeyWindow();
+        if (!hostWindow) return;
+
+        UIView *toast = [[UIView alloc] init];
+        toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        toast.layer.cornerRadius = 12;
+        UILabel *label = [[UILabel alloc] init];
+        label.text = message; label.textColor = [UIColor whiteColor];
+        label.font = [UIFont boldSystemFontOfSize:14]; label.numberOfLines = 0;
+        label.textAlignment = NSTextAlignmentCenter;
+        [toast addSubview:label];
+        CGSize maxSize = CGSizeMake([UIScreen mainScreen].bounds.size.width - 60, CGFLOAT_MAX);
+        CGRect textRect = [message boundingRectWithSize:maxSize options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: label.font} context:nil];
+        CGFloat w = textRect.size.width + 30, h = textRect.size.height + 16;
+        label.frame = CGRectMake(15, 8, textRect.size.width, textRect.size.height);
+        CGPoint center = CGPointMake(hostWindow.bounds.size.width/2, hostWindow.bounds.size.height - 150);
+        toast.frame = CGRectMake(center.x - w/2, center.y - h/2, w, h);
+        toast.layer.zPosition = CGFLOAT_MAX;
+        [hostWindow addSubview:toast];
+
+        [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            toast.alpha = 0;
+        } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
+    });
+}
 
 // ==================== 工具函数 ====================
-static NSString *getControlEventName(UIControlEvents e) { /* 与之前相同 */ }
-static void saveToFile(NSString *log) { /* 与之前相同 */ }
-static void highlightView(UIView *view) { /* 与之前相同 */ }
+static NSString *getControlEventName(UIControlEvents e) {
+    switch (e) {
+        case UIControlEventTouchDown: return @"TouchDown";
+        case UIControlEventTouchDownRepeat: return @"TouchDownRepeat";
+        case UIControlEventTouchDragInside: return @"DragInside";
+        case UIControlEventTouchDragOutside: return @"DragOutside";
+        case UIControlEventTouchUpInside: return @"TouchUpInside";
+        case UIControlEventTouchUpOutside: return @"TouchUpOutside";
+        case UIControlEventTouchCancel: return @"TouchCancel";
+        case UIControlEventValueChanged: return @"ValueChanged";
+        case UIControlEventPrimaryActionTriggered: return @"PrimaryAction";
+        case UIControlEventEditingDidBegin: return @"EditingBegin";
+        case UIControlEventEditingDidEnd: return @"EditingEnd";
+        default: return [NSString stringWithFormat:@"Evt%lu", (unsigned long)e];
+    }
+}
 
+static void saveToFile(NSString *log) {
+    @try {
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        if (paths.count == 0) return;
+        NSString *path = [paths[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) [[NSData data] writeToFile:path atomically:YES];
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (fh) { [fh seekToEndOfFile]; [fh writeData:[log dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
+    } @catch (NSException *e) {}
+}
+
+static void highlightView(UIView *view) {
+    if (!view) return;
+    UIColor *oldColor = nil;
+    CGColorRef oldCG = view.layer.borderColor;
+    if (oldCG != NULL) oldColor = [UIColor colorWithCGColor:oldCG];
+    CGFloat oldWidth = view.layer.borderWidth;
+    view.layer.borderColor = [UIColor redColor].CGColor;
+    view.layer.borderWidth = 3.0;
+    __weak UIView *wv = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong UIView *sv = wv;
+        if (sv) { sv.layer.borderColor = oldColor ? oldColor.CGColor : NULL; sv.layer.borderWidth = oldWidth; }
+    });
+}
 // ==================== 规则管理 ====================
-static void saveRule(NSDictionary *rule) { /* 与之前相同 */ }
-static UIView *findMatchingView(UIView *root, NSDictionary *rule) { /* 与之前相同 */ }
-static void clearAllRules(void) { /* 与之前相同 */ }
+static void saveRule(NSDictionary *rule) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *existing = [ud arrayForKey:kRulesKey] ?: @[];
+    NSInteger existingIndex = -1;
+    for (NSInteger i = 0; i < existing.count; i++) {
+        NSDictionary *r = existing[i];
+        if ([r[@"buttonClass"] isEqualToString:rule[@"buttonClass"]] &&
+            [r[@"buttonTextPattern"] isEqualToString:rule[@"buttonTextPattern"]] &&
+            [r[@"hierarchyChain"] isEqualToArray:rule[@"hierarchyChain"]]) {
+            existingIndex = i;
+            break;
+        }
+    }
+    NSMutableArray *newRules = [existing mutableCopy];
+    if (existingIndex >= 0) {
+        [newRules replaceObjectAtIndex:existingIndex withObject:rule];
+        showToast(@"🔄 规则已更新");
+    } else {
+        [newRules addObject:rule];
+        showToast([NSString stringWithFormat:@"✅ 已学习：%@", rule[@"buttonTextPattern"]]);
+    }
+    [ud setObject:newRules forKey:kRulesKey];
+    [ud synchronize];
+}
+
+static UIView *findMatchingView(UIView *root, NSDictionary *rule) {
+    if ([root isKindOfClass:[AdInspectorPanel class]] || 
+        [root.window isKindOfClass:[AdInspectorWindow class]]) {
+        return nil;
+    }
+    NSString *targetClass = rule[@"buttonClass"];
+    NSString *textPattern = rule[@"buttonTextPattern"];
+    NSArray *chain = rule[@"hierarchyChain"];
+
+    if ([NSStringFromClass([root class]) isEqualToString:targetClass]) {
+        NSString *currentText = nil;
+        if ([root isKindOfClass:[UIButton class]]) currentText = [(UIButton *)root titleForState:UIControlStateNormal];
+        else if ([root isKindOfClass:[UILabel class]]) currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
+        else currentText = root.accessibilityLabel;
+
+        if (currentText) {
+            BOOL textMatches = NO;
+            if (textPattern.length <= 2) {
+                textMatches = [currentText isEqualToString:textPattern];
+            } else {
+                textMatches = ([currentText rangeOfString:textPattern].location != NSNotFound && currentText.length <= 15);
+            }
+            if (textMatches) {
+                NSMutableArray *currentChain = [NSMutableArray array];
+                UIView *cur = root;
+                while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+                    [currentChain addObject:NSStringFromClass([cur class])];
+                    cur = cur.superview;
+                }
+                if ([currentChain isEqualToArray:chain]) return root;
+            }
+        }
+    }
+    for (UIView *sub in root.subviews) {
+        UIView *found = findMatchingView(sub, rule);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void clearAllRules(void) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
 
 // ==================== 强制移除广告视图 ====================
-static void forceRemoveAdView(UIView *view) { /* 与之前相同 */ }
+static void forceRemoveAdView(UIView *view) {
+    if (!view) return;
+    
+    NSArray *adClassNames = @[@"GDTSplashDLView", @"CSJSplashView", @"GDTDLRootView"];
+    
+    UIView *container = view;
+    while (container && ![container isKindOfClass:[UIWindow class]]) {
+        for (NSString *className in adClassNames) {
+            if ([NSStringFromClass([container class]) isEqualToString:className]) {
+                if (container.superview) {
+                    [container removeFromSuperview];
+                    showToast(@"⏩ 已移除广告容器");
+                    return;
+                }
+            }
+        }
+        container = container.superview;
+    }
+    
+    UIView *cur = view;
+    while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+        if ([cur.superview isKindOfClass:[UIWindow class]] || 
+            [cur.superview isKindOfClass:NSClassFromString(@"UITransitionView")]) {
+            [cur removeFromSuperview];
+            showToast(@"⏩ 已移除广告视图");
+            return;
+        }
+        cur = cur.superview;
+    }
+    
+    UIWindow *adWindow = view.window;
+    if (adWindow && ![adWindow isKindOfClass:[AdInspectorWindow class]]) {
+        adWindow.hidden = YES;
+        showToast(@"⏩ 已强制关闭广告窗口");
+    }
+}
 
-// ==================== 跳过引擎（调试版） ====================
+// ==================== 跳过引擎（调试模式 + 多重手势触发 + 强制移除兜底） ====================
 static void triggerSkip(UIView *view, NSDictionary *rule) {
     if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
-        [view.window isKindOfClass:[AdInspectorWindow class]]) return;
+        [view.window isKindOfClass:[AdInspectorWindow class]]) {
+        return;
+    }
 
     // 调试模式：只提示，不操作，同时提升Flexing窗口
     if (s_debugMode) {
@@ -288,26 +498,455 @@ static void triggerSkip(UIView *view, NSDictionary *rule) {
         return;
     }
 
-    // 正常跳过逻辑（与之前相同）...
+    NSString *triggerType = rule[@"triggerType"];
+    NSString *gestureClass = rule[@"gestureClass"];
+    NSString *targetClass = rule[@"targetClass"];
+    NSString *actionStr = rule[@"actionSelector"];
+    NSString *gestureViewClass = rule[@"gestureViewClass"];
+
+    // 路径1：UIControl 事件
+    if ([triggerType isEqualToString:@"controlEvent"]) {
+        if ([view isKindOfClass:[UIControl class]]) {
+            [(UIControl *)view sendActionsForControlEvents:[rule[@"controlEvent"] unsignedIntegerValue]];
+            showToast(@"⏩ 已自动跳过");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (view && !view.hidden && view.superview) {
+                    forceRemoveAdView(view);
+                }
+            });
+            return;
+        }
+    }
+
+    // 路径2：增强手势分析（Ivar + KVC + 强制状态 + UIControl事件）
+    if ([triggerType isEqualToString:@"gesture"] && gestureClass) {
+        UIView *gestureHost = view;
+        if (gestureViewClass) {
+            UIView *cur = view;
+            while (cur && ![NSStringFromClass([cur class]) isEqualToString:gestureViewClass]) {
+                cur = cur.superview;
+            }
+            if (cur) gestureHost = cur;
+        }
+        
+        UIView *cur = gestureHost;
+        while (cur) {
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                if ([NSStringFromClass([gr class]) isEqualToString:gestureClass]) {
+                    BOOL triggered = NO;
+                    
+                    // 方式1：已知target/action，直接调用
+                    if (targetClass && actionStr && 
+                        ![targetClass isEqualToString:@"-"] && 
+                        ![actionStr isEqualToString:@"-"]) {
+                        SEL action = NSSelectorFromString(actionStr);
+                        id target = cur;
+                        while (target && ![NSStringFromClass([target class]) isEqualToString:targetClass]) {
+                            target = [target nextResponder];
+                        }
+                        if (target && [target respondsToSelector:action]) {
+                            ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                            triggered = YES;
+                        }
+                    }
+                    
+                    // 方式2：通过Ivar直接读取_targets（突破私有限制）
+                    if (!triggered) {
+                        id targets = ATGetObjectIvar(gr, "_targets");
+                        if (targets && [targets isKindOfClass:[NSArray class]]) {
+                            for (id t in targets) {
+                                id target = ATGetObjectIvar(t, "_target");
+                                SEL action = ATGetSelectorIvar(t, "_action");
+                                if (target && action && [target respondsToSelector:action]) {
+                                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                                    triggered = YES;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 方式3：KVC读取（备用）
+                    if (!triggered) {
+                        @try {
+                            NSArray *tgts = [gr valueForKey:@"_targets"];
+                            if (tgts && [tgts isKindOfClass:[NSArray class]]) {
+                                for (id t in tgts) {
+                                    id target = [t valueForKey:@"_target"];
+                                    id actionObj = [t valueForKey:@"_action"];
+                                    SEL action = NULL;
+                                    if ([actionObj isKindOfClass:[NSString class]]) {
+                                        action = NSSelectorFromString(actionObj);
+                                    } else if ([actionObj isKindOfClass:[NSValue class]]) {
+                                        action = (SEL)[actionObj pointerValue];
+                                    }
+                                    if (target && action && [target respondsToSelector:action]) {
+                                        ((void (*)(id, SEL, id))objc_msgSend)(target, action, gr);
+                                        triggered = YES;
+                                    }
+                                }
+                            }
+                        } @catch (NSException *e) {}
+                    }
+                    
+                    // 方式4：强制设置手势状态
+                    if (!triggered) {
+                        @try {
+                            [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                            triggered = YES;
+                        } @catch (NSException *e) {}
+                    }
+                    
+                    // 方式5：向按钮发送UIControl事件
+                    if (!triggered && [view isKindOfClass:[UIControl class]]) {
+                        [(UIControl *)view sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        triggered = YES;
+                    }
+                    
+                    if (triggered) {
+                        showToast(@"⏩ 已自动跳过");
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            if (view && !view.hidden && view.superview) {
+                                forceRemoveAdView(view);
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+            cur = cur.superview;
+        }
+    }
+
+    // 路径3：直接移除广告容器（最终兜底）
+    forceRemoveAdView(view);
+    showToast(@"⏩ 已强制关闭广告");
 }
 
 // ==================== 自动跳过扫描 ====================
-static void applyAllSavedRules(void) { /* 与之前相同 */ }
+static void applyAllSavedRules(void) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *rules = [ud arrayForKey:kRulesKey];
+    if (!rules.count) return;
+
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in [(UIWindowScene *)scene windows]) {
+            if ([window isKindOfClass:[AdInspectorWindow class]]) continue;
+            for (NSDictionary *rule in rules) {
+                UIView *matched = findMatchingView(window, rule);
+                if (matched && !matched.hidden && matched.alpha > 0) {
+                    triggerSkip(matched, rule);
+                    return;
+                }
+            }
+        }
+    }
+}
 
 // ==================== 按钮识别 ====================
-static BOOL isSkipText(NSString *text) { /* 与之前相同 */ }
-static UIView *findSkipLabelInView(UIView *root) { /* 与之前相同 */ }
+static BOOL isSkipText(NSString *text) {
+    if (!text || text.length == 0) return NO;
+    NSArray *keywords = @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"];
+    for (NSString *keyword in keywords) {
+        if ([text rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound && text.length <= 15) {
+            return YES;
+        }
+    }
+    return NO;
+}
 
-// ==================== 核心分析（学习） ====================
-static void analyzeTouchView(UIView *view, CGPoint point) { /* 与之前相同，含Ivar提取 */ }
+static UIView *findSkipLabelInView(UIView *root) {
+    if ([root isKindOfClass:[AdInspectorPanel class]]) return nil;
+    
+    NSString *currentText = nil;
+    if ([root isKindOfClass:[UIButton class]]) {
+        currentText = [(UIButton *)root titleForState:UIControlStateNormal];
+    } else if ([root isKindOfClass:[UILabel class]]) {
+        currentText = [(UILabel *)root text] ?: [(UILabel *)root attributedText].string;
+    }
+    if (!currentText) currentText = root.accessibilityLabel;
+    if (isSkipText(currentText)) return root;
 
-// ==================== Hook ====================
+    for (UIView *sub in root.subviews) {
+        UIView *found = findSkipLabelInView(sub);
+        if (found) return found;
+    }
+    return nil;
+}
+
+// ==================== 核心分析（学习，含Ivar提取） ====================
+static void analyzeTouchView(UIView *view, CGPoint point) {
+    if (!view) return;
+    if ([view isDescendantOfView:[AdInspectorPanel shared]] ||
+        [view.window isKindOfClass:[AdInspectorWindow class]]) return;
+
+    NSDate *now = [NSDate date];
+    if (s_lastAnalysisTime && [now timeIntervalSinceDate:s_lastAnalysisTime] < kMinAnalysisInterval) return;
+    s_lastAnalysisTime = now;
+
+    UIView *actualView = findSkipLabelInView(view);
+    if (!actualView) {
+        showToast(@"⚠️ 未检测到跳过按钮，学习失败");
+        return;
+    }
+
+    @try {
+        UIWindow *adWindow = actualView.window;
+        NSString *windowClass = adWindow ? NSStringFromClass([adWindow class]) : @"未知";
+
+        NSMutableString *out = [NSMutableString string];
+        [out appendFormat:@"\n══════ %@ ══════\n",
+         [NSDateFormatter localizedStringFromDate:now dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
+
+        NSMutableArray *chainArray = [NSMutableArray array];
+        UIView *cur = actualView;
+        while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+            [chainArray addObject:NSStringFromClass([cur class])];
+            cur = cur.superview;
+        }
+        NSString *containerClass = chainArray.count >= 2 ? chainArray[1] : nil;
+
+        [out appendString:@"📊 视图层级链:\n"];
+        cur = actualView;
+        int depth = 0;
+        while (cur && depth < 15) {
+            NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@" " startingAtIndex:0];
+            [out appendFormat:@"%@▸ %@", indent, NSStringFromClass([cur class])];
+            NSMutableArray *tags = [NSMutableArray array];
+            if (cur.tag != 0) [tags addObject:[NSString stringWithFormat:@"tag:%ld", (long)cur.tag]];
+            if ([cur isKindOfClass:[UIButton class]]) {
+                NSString *t = [(UIButton *)cur titleForState:UIControlStateNormal];
+                if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
+            }
+            if ([cur isKindOfClass:[UILabel class]]) {
+                NSString *t = [(UILabel *)cur text] ?: [(UILabel *)cur attributedText].string;
+                if (t.length > 20) t = [[t substringToIndex:20] stringByAppendingString:@"..."];
+                if (t.length) [tags addObject:[NSString stringWithFormat:@"\"%@\"", t]];
+            }
+            if (cur.accessibilityLabel.length) [tags addObject:[NSString stringWithFormat:@"a11y:\"%@\"", cur.accessibilityLabel]];
+            if (tags.count) [out appendFormat:@" [%@]", [tags componentsJoinedByString:@", "]];
+            [out appendFormat:@"\n%@  %@\n", indent, NSStringFromCGRect(cur.frame)];
+            cur = cur.superview;
+            depth++;
+        }
+
+        [out appendString:@"\n🎯 Target-Action & 手势:\n"];
+        BOOL found = NO;
+        NSMutableArray *taInfo = [NSMutableArray array];
+        cur = actualView;
+        depth = 0;
+        while (cur && depth < 8) {
+            if ([cur isKindOfClass:[UIControl class]]) {
+                UIControl *c = (UIControl *)cur;
+                for (id tgt in c.allTargets) {
+                    UIControlEvents checkEvents[] = {UIControlEventTouchUpInside, UIControlEventTouchDown, UIControlEventValueChanged, UIControlEventPrimaryActionTriggered};
+                    for (int i = 0; i < 4; i++) {
+                        NSArray *acts = [c actionsForTarget:tgt forControlEvent:checkEvents[i]];
+                        if (acts.count) {
+                            found = YES;
+                            [out appendFormat:@"  [%@] → %@.%@ (%@)\n", NSStringFromClass([cur class]), NSStringFromClass([tgt class]), acts[0], getControlEventName(checkEvents[i])];
+                            [taInfo addObject:@{@"viewClass": NSStringFromClass([cur class]), @"targetClass": NSStringFromClass([tgt class]), @"action": acts[0], @"event": @(checkEvents[i])}];
+                        }
+                    }
+                }
+            }
+            
+            // 增强手势分析：KVC + Ivar
+            for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                found = YES;
+                [out appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView];
+                
+                BOOL gotTargetInfo = NO;
+                
+                // KVC读取
+                @try {
+                    NSArray *tgts = [gr valueForKey:@"_targets"];
+                    if (tgts && [tgts isKindOfClass:[NSArray class]]) {
+                        for (id t in tgts) {
+                            id target = [t valueForKey:@"_target"];
+                            id actionObj = [t valueForKey:@"_action"];
+                            NSString *actionStr = nil;
+                            if ([actionObj isKindOfClass:[NSString class]]) actionStr = actionObj;
+                            else if ([actionObj isKindOfClass:[NSValue class]]) actionStr = NSStringFromSelector((SEL)[actionObj pointerValue]);
+                            if (target && actionStr) {
+                                [out appendFormat:@"    → %@.%@\n", NSStringFromClass([target class]), actionStr];
+                                [taInfo addObject:@{
+                                    @"viewClass": NSStringFromClass([cur class]),
+                                    @"gestureClass": NSStringFromClass([gr class]),
+                                    @"targetClass": NSStringFromClass([target class]),
+                                    @"action": actionStr
+                                }];
+                                gotTargetInfo = YES;
+                            }
+                        }
+                    }
+                } @catch (NSException *e) {}
+                
+                // Ivar直接读取（突破私有限制）
+                if (!gotTargetInfo) {
+                    id targets = ATGetObjectIvar(gr, "_targets");
+                    if (targets && [targets isKindOfClass:[NSArray class]]) {
+                        for (id t in targets) {
+                            id target = ATGetObjectIvar(t, "_target");
+                            SEL action = ATGetSelectorIvar(t, "_action");
+                            if (target && action) {
+                                NSString *actionStr = NSStringFromSelector(action);
+                                [out appendFormat:@"    → %@.%@ (通过Ivar)\n", NSStringFromClass([target class]), actionStr];
+                                [taInfo addObject:@{
+                                    @"viewClass": NSStringFromClass([cur class]),
+                                    @"gestureClass": NSStringFromClass([gr class]),
+                                    @"targetClass": NSStringFromClass([target class]),
+                                    @"action": actionStr
+                                }];
+                                gotTargetInfo = YES;
+                            }
+                        }
+                    }
+                }
+                
+                if (!gotTargetInfo) {
+                    [out appendString:@"    (无法提取 target/action，将使用备用规则)\n"];
+                }
+            }
+            cur = cur.superview;
+            depth++;
+        }
+        if (!found) [out appendString:@"  (未检测到绑定)\n"];
+
+        [out appendFormat:@"\n🔍 诊断信息:\n  广告窗口: %@\n", windowClass];
+        [out appendFormat:@"  实际目标: %@\n", NSStringFromClass([actualView class])];
+        [out appendFormat:@"  frame: %@\n", NSStringFromCGRect(actualView.frame)];
+        [out appendFormat:@"  bounds: %@\n", NSStringFromCGRect(actualView.bounds)];
+        [out appendFormat:@"  userInteraction:%d hidden:%d alpha:%.2f\n", actualView.userInteractionEnabled, actualView.hidden, actualView.alpha];
+        if (actualView.gestureRecognizers.count) {
+            [out appendString:@"  视图手势: "];
+            for (UIGestureRecognizer *gr in actualView.gestureRecognizers) [out appendFormat:@"%@ ", NSStringFromClass([gr class])];
+            [out appendString:@"\n"];
+        }
+        [out appendString:@"  响应链: "];
+        UIResponder *r = actualView.nextResponder;
+        int rc = 0;
+        while (r && rc < 6) { [out appendFormat:@"→%@ ", NSStringFromClass([r class])]; r = r.nextResponder; rc++; }
+        [out appendString:@"\n══════════════════════════\n"];
+
+        [[AdInspectorPanel shared] showLog:out];
+        saveToFile(out);
+        highlightView(actualView);
+
+        // 学习规则
+        NSString *buttonText = nil;
+        if ([actualView isKindOfClass:[UIButton class]]) buttonText = [(UIButton *)actualView titleForState:UIControlStateNormal];
+        else if ([actualView isKindOfClass:[UILabel class]]) buttonText = [(UILabel *)actualView text] ?: [(UILabel *)actualView attributedText].string;
+        if (buttonText.length == 0) buttonText = actualView.accessibilityLabel;
+        if (buttonText.length == 0) {
+            showToast(@"⚠️ 按钮无文字，学习失败");
+            return;
+        }
+
+        NSMutableDictionary *rule = [NSMutableDictionary dictionary];
+        rule[@"buttonClass"] = NSStringFromClass([actualView class]);
+        rule[@"buttonTextPattern"] = buttonText;
+        rule[@"hierarchyChain"] = chainArray;
+        if (containerClass) rule[@"containerClass"] = containerClass;
+        if (windowClass) rule[@"windowClass"] = windowClass;
+
+        // 提取 target/action
+        for (NSDictionary *info in taInfo) {
+            if (info[@"event"] && [info[@"event"] unsignedIntegerValue] == UIControlEventTouchUpInside) {
+                rule[@"triggerType"] = @"controlEvent";
+                rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
+                rule[@"targetClass"] = info[@"targetClass"];
+                rule[@"actionSelector"] = info[@"action"];
+                break;
+            }
+        }
+        if (!rule[@"triggerType"]) {
+            for (NSDictionary *info in taInfo) {
+                if (info[@"gestureClass"] && info[@"targetClass"] && info[@"action"]) {
+                    rule[@"triggerType"] = @"gesture";
+                    rule[@"gestureClass"] = info[@"gestureClass"];
+                    rule[@"targetClass"] = info[@"targetClass"];
+                    rule[@"actionSelector"] = info[@"action"];
+                    rule[@"gestureViewClass"] = info[@"viewClass"];
+                    break;
+                }
+            }
+        }
+        if (!rule[@"triggerType"]) {
+            cur = actualView;
+            while (cur) {
+                for (UIGestureRecognizer *gr in cur.gestureRecognizers) {
+                    rule[@"triggerType"] = @"gesture";
+                    rule[@"gestureClass"] = NSStringFromClass([gr class]);
+                    rule[@"gestureViewClass"] = NSStringFromClass([cur class]);
+                    break;
+                }
+                if (rule[@"triggerType"]) break;
+                cur = cur.superview;
+            }
+        }
+        if (!rule[@"triggerType"] && [actualView isKindOfClass:[UIControl class]]) {
+            rule[@"triggerType"] = @"controlEvent";
+            rule[@"controlEvent"] = @(UIControlEventTouchUpInside);
+        }
+
+        if (rule[@"triggerType"]) {
+            saveRule(rule);
+        } else {
+            showToast(@"❌ 无法学习触发方式");
+        }
+    } @catch (NSException *e) {
+        showToast(@"⚠️ 分析异常");
+    }
+}
+
+// ==================== Hook UIApplication sendEvent: ====================
 %hook UIApplication
-- (void)sendEvent:(UIEvent *)event { /* 与之前相同 */ }
+- (void)sendEvent:(UIEvent *)event {
+    %orig;
+    if (event.type == UIEventTypeTouches) {
+        NSSet *touches = [event allTouches];
+
+        if (touches.count >= 2) {
+            BOOL allStationary = YES;
+            for (UITouch *t in touches) {
+                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
+                    allStationary = NO; break;
+                }
+            }
+            if (allStationary && !s_twoFingerStart) {
+                s_twoFingerStart = [NSDate date];
+            }
+            if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
+                AdInspectorPanel *panel = [AdInspectorPanel shared];
+                if (panel.hidden) {
+                    [panel forceShow];
+                }
+                s_twoFingerStart = nil;
+                s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
+            }
+        } else {
+            s_twoFingerStart = nil;
+        }
+
+        if (touches.count == 1) {
+            UITouch *touch = [touches anyObject];
+            if (touch.phase == UITouchPhaseEnded && touch.view && !s_twoFingerStart) {
+                if (s_ignoreSingleTouchUntil && [[NSDate date] compare:s_ignoreSingleTouchUntil] == NSOrderedAscending) {
+                    return;
+                }
+                analyzeTouchView(touch.view, [touch locationInView:nil]);
+            }
+        }
+    }
+}
 %end
 
 %hook UIControl
-- (void)addTarget:(id)target action:(SEL)action forControlEvents:(UIControlEvents)controlEvents { /* 与之前相同 */ }
+- (void)addTarget:(id)target action:(SEL)action forControlEvents:(UIControlEvents)controlEvents {
+    NSLog(@"[AdInspector] 🔗 %@ → %@.%@ [%@]", NSStringFromClass([self class]), NSStringFromClass([target class]), NSStringFromSelector(action), getControlEventName(controlEvents));
+    %orig;
+}
 %end
 
 // ==================== 初始化 ====================
