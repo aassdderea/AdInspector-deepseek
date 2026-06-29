@@ -418,9 +418,34 @@ static void applyCustomRules(void)
             const char *type = [sig getArgumentTypeAtIndex:2];
             if (strcmp(type,"q")==0 || strcmp(type,"i")==0 || strcmp(type,"Q")==0) {
                 NSInteger val = [paramStr integerValue];
-                ((void(*)(id,SEL,NSInteger))objc_msgSend)(tg, m, val);
-                logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%ld 类型:NSInteger 已执行", NSStringFromClass([tg class]), actualMethod, (long)val];
-                showToast([NSString stringWithFormat:@"✅ %@(%ld)", actualMethod, (long)val]);
+                
+                // 先触发触摸开始
+                if ([tg respondsToSelector:@selector(GDTfunctionm80Ge8:beganWithTouches:andEvent:)]) {
+                    ((void(*)(id,SEL,id,id,id))objc_msgSend)(tg, @selector(GDTfunctionm80Ge8:beganWithTouches:andEvent:), nil, nil, nil);
+                }
+                
+                // 延迟触发跳过
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    ((void(*)(id,SEL,NSInteger))objc_msgSend)(tg, m, val);
+                });
+                
+                // 延迟触发销毁
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    id responder = tg;
+                    while (responder) {
+                        if ([responder isKindOfClass:NSClassFromString(@"GDTDLBusinessManager")]) {
+                            if ([responder respondsToSelector:@selector(onDestroy)]) {
+                                ((void(*)(id,SEL))objc_msgSend)(responder, @selector(onDestroy));
+                            }
+                            break;
+                        }
+                        responder = [responder nextResponder];
+                    }
+                });
+                
+                logMsg = [NSString stringWithFormat:@"✅ %@.%@ 参数:%ld +完整跳过流程 已执行", NSStringFromClass([tg class]), actualMethod, (long)val];
+                showToast([NSString stringWithFormat:@"✅ %@(%ld)+流程", actualMethod, (long)val]);
+
             } else if (strcmp(type,"B")==0) {
                 BOOL val = [paramStr boolValue];
                 ((void(*)(id,SEL,BOOL))objc_msgSend)(tg, m, val);
