@@ -119,7 +119,6 @@ static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
 static UIView *findSkipLabelInView(UIView *root);
-static void saveRule(NSDictionary *r);
 
 static NSDate *s_twoFingerStart = nil;
 static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
@@ -221,7 +220,6 @@ static AdInspectorWindow *s_floatWindow = nil;
 static void showToast(NSString *m) { dispatch_async(dispatch_get_main_queue(), ^{ UIWindow *hw = getKeyWindow(); if (!hw) return; UIView *tv = [[UIView alloc] init]; tv.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85]; tv.layer.cornerRadius = 12; UILabel *l = [[UILabel alloc] init]; l.text = m; l.textColor = [UIColor whiteColor]; l.font = [UIFont boldSystemFontOfSize:14]; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter; [tv addSubview:l]; CGSize ms = CGSizeMake([UIScreen mainScreen].bounds.size.width - 60, CGFLOAT_MAX); CGRect tr = [m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: l.font} context:nil]; l.frame = CGRectMake(15, 8, tr.size.width, tr.size.height); tv.frame = CGRectMake((hw.bounds.size.width - (tr.size.width + 30)) / 2, hw.bounds.size.height - 150, tr.size.width + 30, tr.size.height + 16); tv.layer.zPosition = CGFLOAT_MAX; [hw addSubview:tv]; [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{ tv.alpha = 0; } completion:^(BOOL f) { [tv removeFromSuperview]; }]; }); }
 
 // ==================== 规则管理 ====================
-static void saveRule(NSDictionary *r) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *ex = [ud arrayForKey:kRulesKey] ?: @[]; NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kRulesKey]; [ud synchronize]; }
 static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
 static void saveCustomRule(NSDictionary *r) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[]; for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; } NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize]; }
 static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; }
