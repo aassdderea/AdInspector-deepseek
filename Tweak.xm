@@ -12,6 +12,7 @@ static NSDate *s_trackStartTime = nil;
 static BOOL s_isDeepTracking = NO;
 static NSDate *s_deepTrackStartTime = nil;
 static NSMutableArray *s_deepTrackedMethods = nil;
+static BOOL s_isKeyboardVisible = NO;
 
 // ==================== 调用栈获取 ====================
 static NSString *getCallStackSymbols(void)
@@ -103,6 +104,10 @@ static BOOL isFlexingAvailable(void)
 
 static void raiseFlexingWindow(void)
 {
+    if (s_isKeyboardVisible)
+    {
+        return;
+    }
     for (UIWindow *w in getAllWindows())
     {
         NSString *cn = NSStringFromClass([w class]);
@@ -182,6 +187,22 @@ static void startDeepTracking(void)
     s_deepTrackedMethods = [NSMutableArray array];
     s_isDeepTracking = YES;
     s_deepTrackStartTime = [NSDate date];
+
+    Class bmClass = NSClassFromString(@"GDTDLBusinessManager");
+    if (bmClass)
+    {
+        hookAllMethodsOfClass(bmClass);
+    }
+    Class rootViewClass = NSClassFromString(@"GDTDLRootView");
+    if (rootViewClass)
+    {
+        hookAllMethodsOfClass(rootViewClass);
+    }
+    Class splashClass = NSClassFromString(@"GDTSplashDLView");
+    if (splashClass)
+    {
+        hookAllMethodsOfClass(splashClass);
+    }
 }
 
 static NSArray *stopDeepTracking(void)
@@ -304,6 +325,7 @@ static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMut
 static NSString *getCallStackSymbols(void);
 static void startDeepTracking(void);
 static NSArray *stopDeepTracking(void);
+static void hookAllMethodsOfClass(Class cls);
 
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
@@ -605,6 +627,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)kbShow:(NSNotification *)n
 {
+    s_isKeyboardVisible = YES;
     NSDictionary *i = n.userInfo;
     CGRect k = [i[UIKeyboardFrameEndUserInfoKey] CGRectValue];
     CGFloat kh = k.size.height;
@@ -621,6 +644,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 
 - (void)kbHide:(NSNotification *)n
 {
+    s_isKeyboardVisible = NO;
     [UIView animateWithDuration:[n.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue] animations:^{
         self.center = CGPointMake(self.center.x, 180 + self.bounds.size.height / 2);
     }];
@@ -751,6 +775,16 @@ static AdInspectorWindow *s_floatWindow = nil;
             for (NSDictionary *e in methods)
             {
                 [o appendFormat:@"  +%.3fs → %@\n", [e[@"time"] doubleValue], e[@"method"]];
+            }
+            NSCountedSet *counter = [NSCountedSet set];
+            for (NSDictionary *e in methods)
+            {
+                [counter addObject:e[@"method"]];
+            }
+            [o appendString:@"\n📊 方法调用频率:\n"];
+            for (NSString *name in counter)
+            {
+                [o appendFormat:@"  %@ x%lu\n", name, (unsigned long)[counter countForObject:name]];
             }
             [self showLog:o];
             if (methods.count > 0)
@@ -1735,7 +1769,7 @@ static void hookAllMethodsOfClass(Class cls)
         }
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             applyAllSavedRules();
-            if (s_floatWindow)
+            if (s_floatWindow && !s_isKeyboardVisible)
             {
                 s_floatWindow.hidden = NO;
             }
