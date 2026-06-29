@@ -1,340 +1,339 @@
-#import <UIKit/UIKit.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
-#import <dlfcn.h>
-#import <execinfo.h>
+// ==================== 在文件顶部添加全局变量 ====================
+static NSInteger s_capturedSkipParam = NSIntegerMin; // 捕获的跳过参数
+static BOOL s_isCapturingParams = NO; // 是否正在捕获参数
+static NSString *const kCapturedParamKey = @"AdInspector_CapturedSkipParam";
+static NSString *const kCapturedMethodKey = @"AdInspector_CapturedSkipMethod";
 
-static NSString *const kRulesKey = @"AdInspector_SkipRules";
-static NSString *const kCustomRulesKey = @"AdInspector_CustomRules";
-static NSMutableArray *s_trackedMethods = nil;
-static BOOL s_isTracking = NO;
-static NSDate *s_trackStartTime = nil;
-static BOOL s_isDeepTracking = NO;
-static NSDate *s_deepTrackStartTime = nil;
-static NSMutableArray *s_deepTrackedMethods = nil;
-static BOOL s_isKeyboardVisible = NO;
+// ==================== Hook 关键方法来捕获参数 ====================
 
-// ==================== 调用栈获取 ====================
-static NSString *getCallStackSymbols(void)
-{
-    void *callstack[128];
-    int frames = backtrace(callstack, 128);
-    char **strs = backtrace_symbols(callstack, frames);
-    NSMutableString *result = [NSMutableString string];
-    for (int i = 0; i < frames; i++) { [result appendFormat:@"%s\n", strs[i]]; }
-    free(strs);
-    return result;
+// Hook 1: 捕获触摸事件开始
+%hook GDTDLRootView
+- (void)GDTfunctionm80Ge8:(id)arg1 beganWithTouches:(id)arg2 andEvent:(id)arg3 {
+    s_isCapturingParams = YES; // 开始捕获
+    [[AdInspectorPanel shared] showLog:@"🔍 开始捕获跳过参数..."];
+    %orig;
 }
 
-// ==================== 获取所有窗口 ====================
-static NSArray<UIWindow *> *getAllWindows(void)
-{
-    NSMutableArray *all = [NSMutableArray array];
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes)
-    {
-        if ([scene isKindOfClass:[UIWindowScene class]]) [all addObjectsFromArray:[(UIWindowScene *)scene windows]];
-    }
-    if (all.count == 0)
-    {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [all addObjectsFromArray:[UIApplication sharedApplication].windows];
-#pragma clang diagnostic pop
-    }
-    return all;
+// Hook 2: 捕获触摸事件结束
+- (void)GDTfunctionm80Ge8:(id)arg1 endedWithTouches:(id)arg2 andEvent:(id)arg3 {
+    [[AdInspectorPanel shared] showLog:@"👆 触摸事件结束"];
+    %orig;
 }
 
-// ==================== Flexing ====================
-static BOOL isFlexingAvailable(void)
-{
-    for (UIWindow *w in getAllWindows())
-    {
-        NSString *cn = NSStringFromClass([w class]);
-        if ([cn isEqualToString:@"FLEXWindow"] || [cn isEqualToString:@"FLEXExplorerWindow"] ||
-            [cn isEqualToString:@"FLEXManagerWindow"] || [cn isEqualToString:@"FLEXOverlayWindow"]) return YES;
-    }
-    return NO;
-}
-static void raiseFlexingWindow(void)
-{
-    if (s_isKeyboardVisible) return;
-    for (UIWindow *w in getAllWindows())
-    {
-        NSString *cn = NSStringFromClass([w class]);
-        if ([cn isEqualToString:@"FLEXWindow"] || [cn isEqualToString:@"FLEXExplorerWindow"] ||
-            [cn isEqualToString:@"FLEXManagerWindow"] || [cn isEqualToString:@"FLEXOverlayWindow"])
-        { w.windowLevel = CGFLOAT_MAX; w.hidden = NO; w.alpha = 1.0; [w makeKeyAndVisible]; return; }
-    }
+// Hook 3: 捕获手势触发方法
+- (void)GDTfunctiont2vpjZ:(id)arg1 event:(id)arg2 {
+    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"🖐 手势触发: %@", NSStringFromSelector(_cmd)]];
+    %orig;
 }
 
-// ==================== 方法追踪 ====================
-static void startTracking(void) { s_trackedMethods = [NSMutableArray array]; s_isTracking = YES; s_trackStartTime = [NSDate date]; }
-static void stopTracking(void) { s_isTracking = NO; }
+// Hook 4: 最重要的 - 捕获跳过方法及其参数
+- (void)GDTfunctionu0H2Y8:(NSInteger)arg1 {
+    NSMutableString *log = [NSMutableString string];
+    [log appendFormat:@"\n🎯🎯🎯 捕获到跳过方法调用! 🎯🎯🎯\n"];
+    [log appendFormat:@"方法: GDTfunctionu0H2Y8:\n"];
+    [log appendFormat:@"参数值: %ld\n", (long)arg1];
+    [log appendFormat:@"参数类型: NSInteger\n"];
+    [log appendFormat:@"时间: %@\n", [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
+    
+    // 保存捕获的参数
+    s_capturedSkipParam = arg1;
+    [[NSUserDefaults standardUserDefaults] setInteger:arg1 forKey:kCapturedParamKey];
+    [[NSUserDefaults standardUserDefaults] setObject:@"GDTfunctionu0H2Y8:" forKey:kCapturedMethodKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    
+    [log appendString:@"\n✅ 参数已保存，可用于自动跳过\n"];
+    
+    // 获取调用栈
+    NSString *callStack = getCallStackSymbols();
+    [log appendFormat:@"\n📚 调用栈:\n%@\n", callStack];
+    
+    [[AdInspectorPanel shared] showLog:log];
+    saveToFile(log);
+    
+    s_isCapturingParams = NO; // 停止捕获
+    
+    // 调用原方法
+    %orig;
+}
 
-static void hookAllMethodsOfClass(Class cls)
-{
-    if (!cls) return;
-    NSString *className = NSStringFromClass(cls);
-    unsigned int mc = 0; Method *methods = class_copyMethodList(cls, &mc);
-    for (unsigned int i = 0; i < mc; i++)
-    {
-        SEL sel = method_getName(methods[i]);
-        NSString *mn = NSStringFromSelector(sel);
-        if ([mn hasPrefix:@"."] || [mn hasPrefix:@"init"] || [mn isEqualToString:@"dealloc"] || [mn isEqualToString:@"class"] ||
-            [mn hasPrefix:@"hash"] || [mn hasPrefix:@"isEqual"] || [mn hasPrefix:@"performSelector"] ||
-            [mn hasPrefix:@"respondsToSelector"] || [mn hasPrefix:@"methodSignature"] || [mn hasPrefix:@"forwardInvocation"] ||
-            [mn hasPrefix:@"doesNotRecognize"]) continue;
-        const char *te = method_getTypeEncoding(methods[i]);
-        if (te && te[0] == 'v')
-        {
-            IMP oi = method_getImplementation(methods[i]);
-            NSString *full = [NSString stringWithFormat:@"[%@] %@", className, mn];
-            id block = ^(id self) { if (oi) ((void(*)(id,SEL))oi)(self, sel); if (!s_isTracking && !s_isDeepTracking) return;
-                if (s_isTracking) @synchronized(s_trackedMethods) { [s_trackedMethods addObject:@{@"method":full,@"time":@([[NSDate date] timeIntervalSinceDate:s_trackStartTime])}]; }
-                if (s_isDeepTracking) @synchronized(s_deepTrackedMethods) { [s_deepTrackedMethods addObject:@{@"method":full,@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}]; }
-            };
-            method_setImplementation(methods[i], imp_implementationWithBlock(block));
+// Hook 5: 捕获可能的清理方法
+- (void)GDTfunctione5qsNB:(id)arg1 {
+    if (s_isCapturingParams) {
+        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"🧹 清理方法被调用: GDTfunctione5qsNB: 参数:%@", arg1 ?: @"nil"]];
+    }
+    %orig;
+}
+
+// Hook 6: 捕获其他可能的相关方法
+- (void)GDTfunctiona3Gplz {
+    if (s_isCapturingParams) {
+        [[AdInspectorPanel shared] showLog:@"🔄 GDTfunctiona3Gplz 被调用"];
+    }
+    %orig;
+}
+
+- (void)GDTfunctionu0H2Y8:(NSInteger)arg1 {
+    // 重复 Hook 是为了确保能捕获到，有些 SDK 可能用不同的方法签名
+    if (s_isCapturingParams && s_capturedSkipParam == NSIntegerMin) {
+        [self GDTfunctionu0H2Y8:arg1]; // 调用上面的处理逻辑
+    } else {
+        %orig;
+    }
+}
+%end
+
+// Hook 7: 捕获 BusinessManager 的相关方法
+%hook GDTDLBusinessManager
+- (void)onDestroy {
+    if (s_isCapturingParams) {
+        [[AdInspectorPanel shared] showLog:@"💀 广告被销毁: onDestroy"];
+        
+        // 如果还没有捕获到参数，说明可能不是通过 GDTfunctionu0H2Y8: 跳过的
+        if (s_capturedSkipParam == NSIntegerMin) {
+            [[AdInspectorPanel shared] showLog:@"⚠️ 未捕获到 GDTfunctionu0H2Y8: 参数，尝试其他方法..."];
         }
     }
-    free(methods);
+    %orig;
 }
 
-static void startDeepTracking(void)
-{
-    s_deepTrackedMethods = [NSMutableArray array]; s_isDeepTracking = YES; s_deepTrackStartTime = [NSDate date];
-    hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
-    hookAllMethodsOfClass(NSClassFromString(@"GDTDLRootView"));
-    hookAllMethodsOfClass(NSClassFromString(@"GDTSplashDLView"));
-}
-static NSArray *stopDeepTracking(void) { s_isDeepTracking = NO; NSArray *r = [s_deepTrackedMethods copy]; s_deepTrackedMethods = nil; s_deepTrackStartTime = nil; return r; }
-
-// ==================== 前置声明 ====================
-static void applyAllSavedRules(void);
-static void clearAllRules(void);
-static void clearCustomRules(void);
-static void showToast(NSString *msg);
-static UIWindow *getKeyWindow(void);
-static void saveCustomRule(NSDictionary *r);
-static void applyCustomRules(void);
-static UIView *findViewOfClass(UIView *root, NSString *cn);
-static id getObjectByKeyPath(id obj, NSString *kp);
-static UIView *findSkipLabelInView(UIView *root);
-
-static NSDate *s_twoFingerStart = nil;
-static const NSTimeInterval kTwoFingerHoldDuration = 0.5;
-static NSDate *s_ignoreSingleTouchUntil = nil;
-
-static UIWindow *getKeyWindow(void)
-{
-    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue; if (w.isKeyWindow) return w; }
-    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue; if (!w.hidden && w.alpha > 0) return w; }
-    return nil;
-}
-
-// ==================== 悬浮窗 ====================
-@class AdInspectorPanel;
-@interface AdInspectorWindow : UIWindow
-@property (nonatomic, weak) AdInspectorPanel *panel;
-@end
-static AdInspectorWindow *s_floatWindow = nil;
-
-@implementation AdInspectorWindow
-- (instancetype)initWithFrame:(CGRect)frame { self = [super initWithFrame:frame]; if (self) { self.windowLevel = CGFLOAT_MAX; self.backgroundColor = [UIColor clearColor]; self.hidden = NO; self.userInteractionEnabled = YES; s_floatWindow = self; } return self; }
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { UIView *hit = [super hitTest:point withEvent:event]; if (hit == self || (id)hit == (id)self.panel) return nil; while (hit && (id)hit != (id)self.panel) { if (hit.tag >= 1001 && hit.tag <= 1025) return hit; hit = hit.superview; } return nil; }
-- (void)setHidden:(BOOL)hidden { if (!(hidden && !self.isHidden)) [super setHidden:hidden]; }
-@end
-
-// ==================== 面板 ====================
-@interface AdInspectorPanel : UIView <UITextFieldDelegate>
-@property (nonatomic, strong) UITextView *logTextView;
-@property (nonatomic, strong) NSMutableString *logBuffer;
-@property (nonatomic, strong) UITextField *targetViewField;
-@property (nonatomic, strong) UITextField *keyPathField;
-@property (nonatomic, strong) UITextField *methodNameField;
-+ (instancetype)shared;
-- (void)showLog:(NSString *)log;
-- (void)forceShow;
-- (void)hidePanel;
-- (void)addCustomRuleFromFields;
-- (void)testCustomRules;
-- (void)copyLog;
-- (void)toggleDeepTracking:(UIButton *)sender;
-@end
-
-@implementation AdInspectorPanel
-+ (instancetype)shared { static AdInspectorPanel *i = nil; static dispatch_once_t t; dispatch_once(&t, ^{ i = [[AdInspectorPanel alloc] initWithFrame:CGRectMake(5, 180, [UIScreen mainScreen].bounds.size.width - 10, 360)]; }); return i; }
-- (instancetype)initWithFrame:(CGRect)frame
-{
-    self = [super initWithFrame:frame];
-    if (self)
-    {
-        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.90]; self.layer.cornerRadius = 10; self.layer.borderWidth = 1.5; self.layer.borderColor = [UIColor cyanColor].CGColor;
-        self.userInteractionEnabled = YES; self.clipsToBounds = NO; self.hidden = YES;
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbShow:) name:UIKeyboardWillShowNotification object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbHide:) name:UIKeyboardWillHideNotification object:nil];
-
-        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 180, 20)]; t.text = @"🔍 AdInspector"; t.textColor = [UIColor cyanColor]; t.font = [UIFont boldSystemFontOfSize:12]; t.tag = 1001; [self addSubview:t];
-        UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem]; copyBtn.frame = CGRectMake(self.bounds.size.width - 235, 3, 55, 30); [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal]; [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal]; copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold]; copyBtn.tag = 1021; [copyBtn addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:copyBtn];
-
-        UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)]; l1.text = @"目标类:"; l1.textColor = [UIColor whiteColor]; l1.font = [UIFont systemFontOfSize:11]; [self addSubview:l1];
-        _targetViewField = [[UITextField alloc] initWithFrame:CGRectMake(70, 32, self.bounds.size.width - 85, 26)]; _targetViewField.borderStyle = UITextBorderStyleRoundedRect; _targetViewField.backgroundColor = [UIColor darkGrayColor]; _targetViewField.textColor = [UIColor whiteColor]; _targetViewField.font = [UIFont systemFontOfSize:12]; _targetViewField.placeholder = @"GDTDLBusinessManager"; _targetViewField.tag = 1011; _targetViewField.delegate = self; [self addSubview:_targetViewField];
-        UILabel *l2 = [[UILabel alloc] initWithFrame:CGRectMake(12, 64, 80, 20)]; l2.text = @"KVC路径:"; l2.textColor = [UIColor whiteColor]; l2.font = [UIFont systemFontOfSize:11]; [self addSubview:l2];
-        _keyPathField = [[UITextField alloc] initWithFrame:CGRectMake(70, 62, self.bounds.size.width - 85, 26)]; _keyPathField.borderStyle = UITextBorderStyleRoundedRect; _keyPathField.backgroundColor = [UIColor darkGrayColor]; _keyPathField.textColor = [UIColor whiteColor]; _keyPathField.font = [UIFont systemFontOfSize:12]; _keyPathField.placeholder = @"self"; _keyPathField.tag = 1012; _keyPathField.delegate = self; [self addSubview:_keyPathField];
-        UILabel *l3 = [[UILabel alloc] initWithFrame:CGRectMake(12, 94, 80, 20)]; l3.text = @"方法名:"; l3.textColor = [UIColor whiteColor]; l3.font = [UIFont systemFontOfSize:11]; [self addSubview:l3];
-        _methodNameField = [[UITextField alloc] initWithFrame:CGRectMake(70, 92, self.bounds.size.width - 85, 26)]; _methodNameField.borderStyle = UITextBorderStyleRoundedRect; _methodNameField.backgroundColor = [UIColor darkGrayColor]; _methodNameField.textColor = [UIColor whiteColor]; _methodNameField.font = [UIFont systemFontOfSize:12]; _methodNameField.placeholder = @"onDestroy"; _methodNameField.tag = 1013; _methodNameField.delegate = self; [self addSubview:_methodNameField];
-
-        UIButton *addBtn = [UIButton buttonWithType:UIButtonTypeSystem]; addBtn.frame = CGRectMake(12, 126, 60, 30); [addBtn setTitle:@"添加" forState:UIControlStateNormal]; [addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; addBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; addBtn.tag = 1014; [addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:addBtn];
-        UIButton *testBtn = [UIButton buttonWithType:UIButtonTypeSystem]; testBtn.frame = CGRectMake(80, 126, 60, 30); [testBtn setTitle:@"测试" forState:UIControlStateNormal]; [testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal]; testBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12]; testBtn.tag = 1015; [testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:testBtn];
-        UIButton *p1 = [UIButton buttonWithType:UIButtonTypeSystem]; p1.frame = CGRectMake(148, 126, 60, 30); [p1 setTitle:@"预设1" forState:UIControlStateNormal]; [p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal]; p1.titleLabel.font = [UIFont systemFontOfSize:11]; p1.tag = 1016; [p1 addTarget:self action:@selector(fillPreset1) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:p1];
-        UIButton *trkBtn = [UIButton buttonWithType:UIButtonTypeSystem]; trkBtn.frame = CGRectMake(12, 160, 90, 30); [trkBtn setTitle:@"▶开始追踪" forState:UIControlStateNormal]; [trkBtn setTitleColor:[UIColor colorWithRed:1.0 green:0.5 blue:0.0 alpha:1.0] forState:UIControlStateNormal]; trkBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11]; trkBtn.tag = 1018; [trkBtn addTarget:self action:@selector(toggleTracking:) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:trkBtn];
-        UIButton *deepBtn = [UIButton buttonWithType:UIButtonTypeSystem]; deepBtn.frame = CGRectMake(110, 160, 100, 30); [deepBtn setTitle:@"🔬深度追踪" forState:UIControlStateNormal]; [deepBtn setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.7 alpha:1.0] forState:UIControlStateNormal]; deepBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11]; deepBtn.tag = 1022; [deepBtn addTarget:self action:@selector(toggleDeepTracking:) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:deepBtn];
-        UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem]; closeBtn.frame = CGRectMake(self.bounds.size.width - 45, 3, 40, 30); [closeBtn setTitle:@"✕" forState:UIControlStateNormal]; [closeBtn setTitleColor:[UIColor redColor] forState:UIControlStateNormal]; closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:20]; closeBtn.tag = 1002; [closeBtn addTarget:self action:@selector(hidePanel) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:closeBtn];
-        UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem]; clearBtn.frame = CGRectMake(self.bounds.size.width - 135, 3, 45, 30); [clearBtn setTitle:@"清空" forState:UIControlStateNormal]; [clearBtn setTitleColor:[UIColor orangeColor] forState:UIControlStateNormal]; clearBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold]; clearBtn.tag = 1003; [clearBtn addTarget:self action:@selector(clearRulesTapped) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:clearBtn];
-        UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(self.bounds.size.width / 2 - 15, 4, 30, 4)]; handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6]; handle.layer.cornerRadius = 2; handle.tag = 1004; [self addSubview:handle];
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)]; [self addGestureRecognizer:pan];
-
-        CGFloat tvY = 196;
-        _logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, tvY, self.bounds.size.width - 10, self.bounds.size.height - tvY - 5)]; _logTextView.backgroundColor = [UIColor clearColor]; _logTextView.textColor = [UIColor greenColor]; _logTextView.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10]; _logTextView.editable = NO; _logTextView.selectable = YES; _logTextView.tag = 1005; _logTextView.textContainerInset = UIEdgeInsetsMake(2, 2, 2, 2); [self addSubview:_logTextView];
-        _logBuffer = [NSMutableString string];
+// 触摸事件相关方法
+- (void)GDTfunctionu1xv63:(id)arg1 touchEventPhase:(NSInteger)phase {
+    if (s_isCapturingParams) {
+        NSString *phaseStr = @"Unknown";
+        switch (phase) {
+            case 0: phaseStr = @"Began"; break;
+            case 1: phaseStr = @"Moved"; break;
+            case 2: phaseStr = @"Stationary"; break;
+            case 3: phaseStr = @"Ended"; break;
+            case 4: phaseStr = @"Cancelled"; break;
+        }
+        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"👆 触摸阶段: %@ (%ld)", phaseStr, (long)phase]];
     }
-    return self;
+    %orig;
 }
-- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
-- (void)kbShow:(NSNotification *)n { s_isKeyboardVisible = YES; }
-- (void)kbHide:(NSNotification *)n { s_isKeyboardVisible = NO; }
-- (BOOL)textFieldShouldReturn:(UITextField *)tf { [tf resignFirstResponder]; return YES; }
-- (void)handlePan:(UIPanGestureRecognizer *)p { CGPoint t = [p translationInView:self]; self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y); [p setTranslation:CGPointZero inView:self]; }
-- (void)hidePanel { self.hidden = YES; }
-- (void)fillPreset1 { self.targetViewField.text = @"GDTDLBusinessManager"; self.keyPathField.text = @"self"; self.methodNameField.text = @"onDestroy"; }
-- (void)copyLog { NSString *t = self.logBuffer; if (!t.length) { showToast(@"⚠️ 日志为空"); return; } [[UIPasteboard generalPasteboard] setString:t]; showToast(@"✅ 已复制"); }
-- (void)addCustomRuleFromFields { NSString *tv = self.targetViewField.text, *kp = self.keyPathField.text, *mn = self.methodNameField.text; [self.targetViewField resignFirstResponder]; [self.keyPathField resignFirstResponder]; [self.methodNameField resignFirstResponder]; if (!tv.length || !kp.length || !mn.length) { showToast(@"⚠️ 请填写完整规则"); return; } saveCustomRule(@{@"targetView": tv, @"keyPath": kp, @"methodName": mn}); [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → [%@] %@\n", tv, kp, mn]]; showToast(@"✅ 规则已添加"); }
-- (void)testCustomRules { applyCustomRules(); }
-- (void)clearRulesTapped { clearAllRules(); clearCustomRules(); [self showLog:@"\n🗑️ 已清空\n"]; showToast(@"🗑️ 规则已清除"); }
-- (void)toggleTracking:(UIButton *)sender { if (s_isTracking) { stopTracking(); [sender setTitle:@"▶开始追踪" forState:UIControlStateNormal]; } else { startTracking(); [sender setTitle:@"⏹停止追踪" forState:UIControlStateNormal]; } }
-- (void)toggleDeepTracking:(UIButton *)sender { if (s_isDeepTracking) { stopDeepTracking(); [sender setTitle:@"🔬深度追踪" forState:UIControlStateNormal]; } else { startDeepTracking(); [sender setTitle:@"⏹停止深度" forState:UIControlStateNormal]; } }
-- (void)forceShow { if (!s_floatWindow) { UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } } if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; } } else { if (!self.superview) { [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; } s_floatWindow.hidden = NO; s_floatWindow.alpha = 1.0; [s_floatWindow bringSubviewToFront:self]; } self.hidden = NO; self.alpha = 1.0; showToast(@"👆 面板已呼出"); }
-- (void)showLog:(NSString *)log { dispatch_async(dispatch_get_main_queue(), ^{ [self.logBuffer appendString:log]; if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)]; self.logTextView.text = self.logBuffer; if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)]; }); }
-@end
+%end
 
-// ==================== Toast ====================
-static void showToast(NSString *m) { dispatch_async(dispatch_get_main_queue(), ^{ UIWindow *hw = getKeyWindow(); if (!hw) return; UIView *tv = [[UIView alloc] init]; tv.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85]; tv.layer.cornerRadius = 12; UILabel *l = [[UILabel alloc] init]; l.text = m; l.textColor = [UIColor whiteColor]; l.font = [UIFont boldSystemFontOfSize:14]; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter; [tv addSubview:l]; CGSize ms = CGSizeMake([UIScreen mainScreen].bounds.size.width - 60, CGFLOAT_MAX); CGRect tr = [m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName: l.font} context:nil]; l.frame = CGRectMake(15, 8, tr.size.width, tr.size.height); tv.frame = CGRectMake((hw.bounds.size.width - (tr.size.width + 30)) / 2, hw.bounds.size.height - 150, tr.size.width + 30, tr.size.height + 16); tv.layer.zPosition = CGFLOAT_MAX; [hw addSubview:tv]; [UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{ tv.alpha = 0; } completion:^(BOOL f) { [tv removeFromSuperview]; }]; }); }
+// ==================== 修改 AdInspectorPanel ====================
 
-// ==================== 规则管理 ====================
-static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; }
-static void saveCustomRule(NSDictionary *r) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *ex = [ud arrayForKey:kCustomRulesKey] ?: @[]; for (NSDictionary *x in ex) { if ([x[@"targetView"] isEqualToString:r[@"targetView"]] && [x[@"methodName"] isEqualToString:r[@"methodName"]]) return; } NSMutableArray *nr = [ex mutableCopy]; [nr addObject:r]; [ud setObject:nr forKey:kCustomRulesKey]; [ud synchronize]; }
-static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; }
-static id getObjectByKeyPath(id o, NSString *kp) { if ([kp isEqualToString:@"self"]) return o; NSArray *ks = [kp componentsSeparatedByString:@"."]; id c = o; for (NSString *k in ks) { if (!c) return nil; c = [c valueForKey:k]; } return c; }
-static UIView *findViewOfClass(UIView *rt, NSString *cn) { if ([NSStringFromClass([rt class]) isEqualToString:cn]) return rt; for (UIView *sb in rt.subviews) { UIView *f = findViewOfClass(sb, cn); if (f) return f; } return nil; }
-
-// ==================== 核心：方法调用 + 透明层清理 ====================
-static void applyCustomRules(void)
-{
+%new
+- (void)showCapturedParams {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSArray *cr = [ud arrayForKey:kCustomRulesKey];
-    if (!cr || !cr.count) return;
-
-    BOOL didExecute = NO;
-
-    for (NSDictionary *r in cr)
-    {
-        NSString *tvc = r[@"targetView"], *kp = r[@"keyPath"], *mn = r[@"methodName"];
-        if (!tvc || !kp || !mn) continue;
-
-        id tg = nil;
-        for (UIWindow *w in getAllWindows())
-        {
-            if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-            UIView *tv = findViewOfClass(w, tvc);
-            if (tv) { tg = getObjectByKeyPath(tv, kp); if (tg) break; }
-        }
-        if (!tg)
-        {
-            Class c = NSClassFromString(tvc);
-            if (c)
-            {
-                SEL ss[] = {@selector(sharedInstance), @selector(sharedManager), @selector(shared), @selector(defaultManager)};
-                for (int i = 0; i < 4 && !tg; i++) if ([c respondsToSelector:ss[i]]) tg = ((id(*)(id,SEL))objc_msgSend)(c, ss[i]);
-                if (!tg) { id ad = [UIApplication sharedApplication].delegate; @try { tg = [ad valueForKey:tvc]; } @catch(NSException *e){} }
-            }
-        }
-        if ([kp isEqualToString:@"self"]) {} else if (tg) tg = getObjectByKeyPath(tg, kp);
-        if (!tg) continue;
-        SEL m = NSSelectorFromString(mn);
-        if (![tg respondsToSelector:m]) continue;
-
-        NSMethodSignature *sig = [tg methodSignatureForSelector:m]; NSUInteger ac = sig.numberOfArguments;
-        if (ac <= 2) ((void(*)(id,SEL))objc_msgSend)(tg, m);
-        else if (ac == 3) { const char *t = [sig getArgumentTypeAtIndex:2]; if (strcmp(t,"B")==0) ((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,YES); else ((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); }
-        else { NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig]; [inv setTarget:tg]; [inv setSelector:m]; id nilArg = nil; for (NSUInteger i=2;i<ac;i++) [inv setArgument:&nilArg atIndex:i]; [inv invoke]; }
-        didExecute = YES;
+    NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
+    NSString *savedMethod = [ud stringForKey:kCapturedMethodKey];
+    
+    NSMutableString *log = [NSMutableString stringWithString:@"\n📊 已捕获的参数:\n"];
+    
+    if (savedParam == NSIntegerMin || !savedMethod) {
+        [log appendString:@"  ⚠️ 尚未捕获到参数\n"];
+        [log appendString:@"  💡 请手动点击一次广告的跳过按钮\n"];
+    } else {
+        [log appendString:[NSString stringWithFormat:@"  方法: %@\n", savedMethod]];
+        [log appendString:[NSString stringWithFormat:@"  参数值: %ld\n", (long)savedParam]];
+        [log appendString:[NSString stringWithFormat:@"  状态: ✅ 可用于自动跳过\n"]];
     }
+    
+    // 同时显示当前捕获状态
+    if (s_isCapturingParams) {
+        [log appendString:@"  🔍 当前正在捕获中...\n"];
+    }
+    if (s_capturedSkipParam != NSIntegerMin) {
+        [log appendString:[NSString stringWithFormat:@"  💾 内存中的参数: %ld\n", (long)s_capturedSkipParam]];
+    }
+    
+    [self showLog:log];
+}
 
-    if (didExecute)
-    {
+%new
+- (void)testCapturedParam {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
+    
+    if (savedParam == NSIntegerMin) {
+        [self showLog:@"⚠️ 没有已保存的参数，请先手动跳过广告一次"];
+        showToast(@"⚠️ 请先手动跳过广告");
+        return;
+    }
+    
+    // 查找 GDTDLRootView
+    UIView *rootView = nil;
+    for (UIWindow *window in getAllWindows()) {
+        if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) {
+            continue;
+        }
+        rootView = findViewOfClass(window, @"GDTDLRootView");
+        if (rootView && !rootView.hidden) break;
+    }
+    
+    if (!rootView) {
+        [self showLog:@"⚠️ 未找到 GDTDLRootView，可能没有广告显示"];
+        showToast(@"⚠️ 未检测到广告");
+        return;
+    }
+    
+    // 使用捕获的参数执行跳过
+    SEL selector = NSSelectorFromString(@"GDTfunctionu0H2Y8:");
+    if ([rootView respondsToSelector:selector]) {
+        [self showLog:[NSString stringWithFormat:@"🧪 测试跳过: 使用参数 %ld", (long)savedParam]];
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, selector, savedParam);
+        
+        // 检查是否成功
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            for (UIWindow *w in getAllWindows())
-            {
-                if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-                NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
-                while (views.count > 0)
-                {
-                    UIView *v = [views lastObject]; [views removeLastObject];
-                    NSString *cn = NSStringFromClass([v class]);
-                    if ([cn isEqualToString:@"GDTSplashDLView"] || [cn isEqualToString:@"GDTSplashViewController"]) { [v removeFromSuperview]; [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🧹 已移除 %@\n", cn]]; }
-                    if ([cn containsString:@"splash_ad"]) { w.hidden = YES; w.windowLevel = -1000; [w resignKeyWindow]; }
-                    [views addObjectsFromArray:v.subviews];
+            UIView *checkView = nil;
+            for (UIWindow *window in getAllWindows()) {
+                checkView = findViewOfClass(window, @"GDTSplashDLView");
+                if (checkView && !checkView.hidden) break;
+            }
+            
+            if (!checkView || checkView.hidden) {
+                [self showLog:@"✅ 测试成功！广告已被跳过"];
+                showToast(@"✅ 参数有效，广告已跳过");
+            } else {
+                [self showLog:@"❌ 测试失败，广告仍在显示"];
+                showToast(@"❌ 参数无效，请重新捕获");
+            }
+        });
+    } else {
+        [self showLog:@"❌ GDTDLRootView 不响应 GDTfunctionu0H2Y8:"];
+    }
+}
+
+%new
+- (void)clearCapturedParams {
+    s_capturedSkipParam = NSIntegerMin;
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCapturedParamKey];
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCapturedMethodKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [self showLog:@"🗑️ 已清除捕获的参数"];
+    showToast(@"🗑️ 参数已清除");
+}
+
+// ==================== 增强的自动跳过逻辑 ====================
+%new
+- (void)performAutoSkipWithCapturedParam {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSInteger savedParam = [ud integerForKey:kCapturedParamKey];
+    
+    if (savedParam == NSIntegerMin) {
+        // 没有捕获到参数，不执行跳过
+        return;
+    }
+    
+    // 检查是否有广告
+    UIView *rootView = nil;
+    BOOL hasSkipButton = NO;
+    
+    for (UIWindow *window in getAllWindows()) {
+        if ([NSStringFromClass([window class]) isEqualToString:@"AdInspectorWindow"]) {
+            continue;
+        }
+        
+        UIView *splashView = findViewOfClass(window, @"GDTSplashDLView");
+        if (splashView && !splashView.hidden && splashView.alpha > 0.1) {
+            rootView = findViewOfClass(window, @"GDTDLRootView");
+            if (rootView && !rootView.hidden) {
+                UIView *skipLabel = findSkipLabelInView(rootView);
+                if (skipLabel && !skipLabel.hidden && skipLabel.alpha > 0.1) {
+                    hasSkipButton = YES;
+                    break;
                 }
             }
-            for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue; if (!w.hidden && w.alpha > 0) { [w makeKeyAndVisible]; break; } }
-        });
+        }
+    }
+    
+    if (rootView && hasSkipButton) {
+        SEL selector = NSSelectorFromString(@"GDTfunctionu0H2Y8:");
+        if ([rootView respondsToSelector:selector]) {
+            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"🤖 自动跳过: 使用参数 %ld", (long)savedParam]];
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(rootView, selector, savedParam);
+            s_lastAutoApplyTime = [NSDate date];
+        }
     }
 }
 
-static void applyAllSavedRules(void) { NSUserDefaults *ud = [NSUserDefaults standardUserDefaults]; NSArray *cr = [ud arrayForKey:kCustomRulesKey]; if (cr && cr.count > 0) applyCustomRules(); }
+// ==================== 在面板初始化中添加新按钮 ====================
+// 在 initWithFrame 方法中添加以下按钮：
 
-static BOOL isSkipText(NSString *t) { if (!t || !t.length) return NO; for (NSString *k in @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip", @"Skip", @"Close", @"SKIP", @"CLOSE"]) if ([t rangeOfString:k options:NSCaseInsensitiveSearch].location != NSNotFound && t.length <= 15) return YES; return NO; }
-static UIView *findSkipLabelInView(UIView *rt) { if ([rt isKindOfClass:[AdInspectorPanel class]] || (rt.tag >= 1001 && rt.tag <= 1025)) return nil; NSString *ct = nil; if ([rt isKindOfClass:[UIButton class]]) ct = [(UIButton *)rt titleForState:UIControlStateNormal]; else if ([rt isKindOfClass:[UILabel class]]) ct = [(UILabel *)rt text] ?: [(UILabel *)rt attributedText].string; if (!ct) ct = rt.accessibilityLabel; if (isSkipText(ct)) return rt; for (UIView *sb in rt.subviews) { UIView *f = findSkipLabelInView(sb); if (f) return f; } return nil; }
+// 查看捕获参数按钮
+UIButton *showParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+showParamBtn.frame = CGRectMake(12, 194, 60, 30);
+[showParamBtn setTitle:@"📊参数" forState:UIControlStateNormal];
+[showParamBtn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
+showParamBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10];
+showParamBtn.tag = 1028;
+[showParamBtn addTarget:self action:@selector(showCapturedParams) forControlEvents:UIControlEventTouchUpInside];
+[self addSubview:showParamBtn];
 
-// ==================== Hook ====================
-%hook UIGestureRecognizer
-- (void)setState:(UIGestureRecognizerState)state
-{
-    %orig;
-    if (state == UIGestureRecognizerStateEnded)
-    {
-        UIView *view = self.view; if (!view) return;
-        UIView *skipView = findSkipLabelInView(view);
-        if (!skipView) { UIView *parent = view.superview; while (parent && ![parent isKindOfClass:[UIWindow class]]) { skipView = findSkipLabelInView(parent); if (skipView) break; parent = parent.superview; } }
-        if (skipView) { NSString *callStack = getCallStackSymbols(); NSMutableString *log = [NSMutableString string]; [log appendFormat:@"\n🔔 手势触发! 手势:%@ View:%@\n📚 调用栈:\n%@\n", NSStringFromClass([self class]), NSStringFromClass([view class]), callStack]; @try { id targets = [self valueForKey:@"_targets"]; if (targets && [targets isKindOfClass:[NSArray class]]) for (id t in targets) { id target = [t valueForKey:@"_target"]; id action = [t valueForKey:@"_action"]; [log appendFormat:@"🎯 target: %@ → %@\n", NSStringFromClass([target class]), action]; } } @catch (NSException *e) { [log appendString:@"(无法读取 _targets)\n"]; } [log appendString:@"══════\n"]; [[AdInspectorPanel shared] showLog:log]; }
+// 测试参数按钮
+UIButton *testParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+testParamBtn.frame = CGRectMake(80, 194, 60, 30);
+[testParamBtn setTitle:@"🧪测试" forState:UIControlStateNormal];
+[testParamBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];
+testParamBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10];
+testParamBtn.tag = 1029;
+[testParamBtn addTarget:self action:@selector(testCapturedParam) forControlEvents:UIControlEventTouchUpInside];
+[self addSubview:testParamBtn];
+
+// 清除参数按钮
+UIButton *clearParamBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+clearParamBtn.frame = CGRectMake(148, 194, 60, 30);
+[clearParamBtn setTitle:@"🗑️清除" forState:UIControlStateNormal];
+[clearParamBtn setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+clearParamBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10];
+clearParamBtn.tag = 1030;
+[clearParamBtn addTarget:self action:@selector(clearCapturedParams) forControlEvents:UIControlEventTouchUpInside];
+[self addSubview:clearParamBtn];
+
+// ==================== 修改自动执行定时器 ====================
+- (void)autoApplyRulesIfNeeded {
+    if (s_lastAutoApplyTime && 
+        [[NSDate date] timeIntervalSinceDate:s_lastAutoApplyTime] < s_autoApplyCooldown) {
+        return;
+    }
+    
+    // 优先使用捕获的参数进行跳过
+    NSInteger savedParam = [[NSUserDefaults standardUserDefaults] integerForKey:kCapturedParamKey];
+    if (savedParam != NSIntegerMin) {
+        [self performAutoSkipWithCapturedParam];
+    } else {
+        // 如果没有捕获参数，使用自定义规则
+        applyCustomRules();
     }
 }
-%end
 
-%hook UIApplication
-- (void)sendEvent:(UIEvent *)e
-{
-    %orig;
-    if (e.type == UIEventTypeTouches)
-    {
-        NSSet *ts = [e allTouches];
-        if (ts.count >= 2) { BOOL as = YES; for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } } if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date]; if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) { AdInspectorPanel *p = [AdInspectorPanel shared]; if (p.hidden) [p forceShow]; s_twoFingerStart = nil; s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5]; } }
-        else s_twoFingerStart = nil;
+// ==================== 更新自动执行按钮逻辑 ====================
+%new
+- (void)toggleAutoApply:(UIButton *)sender {
+    s_autoApplyRulesEnabled = !s_autoApplyRulesEnabled;
+    
+    if (s_autoApplyRulesEnabled) {
+        // 检查是否有捕获的参数
+        NSInteger savedParam = [[NSUserDefaults standardUserDefaults] integerForKey:kCapturedParamKey];
+        
+        [sender setTitle:@"🤖自动跳过" forState:UIControlStateNormal];
+        [sender setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
+        
+        if (!s_autoApplyTimer) {
+            s_autoApplyTimer = [NSTimer scheduledTimerWithTimeInterval:s_autoApplyInterval 
+                                                                repeats:YES 
+                                                                  block:^(NSTimer *timer) {
+                [self autoApplyRulesIfNeeded];
+            }];
+        }
+        
+        if (savedParam != NSIntegerMin) {
+            [self showLog:[NSString stringWithFormat:@"✅ 自动跳过已开启 (参数:%ld)", (long)savedParam]];
+        } else {
+            [self showLog:@"⚠️ 自动跳过已开启，但还没有捕获参数\n💡 请手动点击一次跳过按钮"];
+        }
+        showToast(@"🤖 自动跳过已开启");
+    } else {
+        [sender setTitle:@"🔴停止跳过" forState:UIControlStateNormal];
+        [sender setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+        
+        [s_autoApplyTimer invalidate];
+        s_autoApplyTimer = nil;
+        
+        [self showLog:@"⏸️ 自动跳过已停止"];
+        showToast(@"⏸️ 自动跳过已停止");
     }
-}
-%end
-
-%hook UIControl
-- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e { NSLog(@"[AdInspector] 🔗 %@ → %@.%@", NSStringFromClass([self class]), NSStringFromClass([t class]), NSStringFromSelector(a)); %orig; }
-%end
-
-// ==================== 初始化 ====================
-%ctor
-{
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } }
-        if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; AdInspectorPanel *p = [AdInspectorPanel shared]; p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); [s_floatWindow addSubview:p]; s_floatWindow.panel = p; }
-        showToast(@"🔍 AdInspector 已激活 | 双指呼面板");
-        if (isFlexingAvailable()) raiseFlexingWindow();
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { applyAllSavedRules(); if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO; if (isFlexingAvailable()) raiseFlexingWindow(); }];
-    });
 }
