@@ -170,7 +170,7 @@ static void recordMethodCall(NSString *name)
     }
 }
 
-// ==================== Hook 类所有方法（必须在 startDeepTracking 之前） ====================
+// ==================== Hook 类所有方法 ====================
 static void hookAllMethodsOfClass(Class cls)
 {
     if (!cls)
@@ -701,14 +701,14 @@ static AdInspectorWindow *s_floatWindow = nil;
 {
     self.targetViewField.text = @"GDTDLBusinessManager";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"onDestroy";
+    self.methodNameField.text = @"GDTfunctiont7uUIH";
 }
 
 - (void)fillPreset2
 {
     self.targetViewField.text = @"GDTDLBusinessManager";
     self.keyPathField.text = @"self";
-    self.methodNameField.text = @"pauseTimer";
+    self.methodNameField.text = @"GDTfunctiona3Gplz";
 }
 
 - (void)copyLog
@@ -743,7 +743,7 @@ static AdInspectorWindow *s_floatWindow = nil;
         @"description": [NSString stringWithFormat:@"%@→%@", tv, mn]
     };
     saveCustomRule(r);
-    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → %@.%@\n", tv, kp, mn]];
+    [self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@ → [%@] %@\n", tv, kp, mn]];
     showToast(@"✅ 规则已添加");
 }
 
@@ -853,7 +853,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     for (NSInteger i = 0; i < cr.count; i++)
     {
         NSDictionary *r = cr[i];
-        [o appendFormat:@"  %ld: %@ → %@.%@\n", (long)i + 1, r[@"targetView"], r[@"keyPath"], r[@"methodName"]];
+        [o appendFormat:@"  %ld: %@ → [%@] %@\n", (long)i + 1, r[@"targetView"], r[@"keyPath"], r[@"methodName"]];
     }
     [self showLog:o];
 }
@@ -1194,6 +1194,7 @@ static UIView *findViewOfClass(UIView *rt, NSString *cn)
     return nil;
 }
 
+// ==================== 自定义规则执行（增强版：签名打印 + 多类型参数尝试） ====================
 static void applyCustomRules(void)
 {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -1211,6 +1212,11 @@ static void applyCustomRules(void)
         {
             continue;
         }
+
+        BOOL found = NO;
+        id tg = nil;
+
+        // 方法1: 在视图层级中查找
         for (UIWindow *w in getAllWindows())
         {
             if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"])
@@ -1218,25 +1224,225 @@ static void applyCustomRules(void)
                 continue;
             }
             UIView *tv = findViewOfClass(w, tvc);
-            if (!tv)
+            if (tv)
             {
-                continue;
-            }
-            id tg = getObjectByKeyPath(tv, kp);
-            if (tg && [tg respondsToSelector:NSSelectorFromString(mn)])
-            {
-                SEL m = NSSelectorFromString(mn);
-                NSMethodSignature *sig = [tg methodSignatureForSelector:m];
-                if (sig.numberOfArguments <= 2)
+                tg = getObjectByKeyPath(tv, kp);
+                if (tg)
                 {
-                    ((void (*)(id, SEL))objc_msgSend)(tg, m);
-                }
-                else
-                {
-                    ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil);
+                    found = YES;
+                    break;
                 }
             }
         }
+
+        // 方法2: 通过类名查找实例
+        if (!found)
+        {
+            Class targetClass = NSClassFromString(tvc);
+            if (targetClass)
+            {
+                // 2a: 尝试常见单例方法
+                SEL sharedSelectors[] = {
+                    @selector(sharedInstance),
+                    @selector(sharedManager),
+                    @selector(shared),
+                    @selector(defaultManager),
+                    @selector(instance),
+                };
+                for (int i = 0; i < 5 && !tg; i++)
+                {
+                    if ([targetClass respondsToSelector:sharedSelectors[i]])
+                    {
+                        tg = ((id (*)(id, SEL))objc_msgSend)(targetClass, sharedSelectors[i]);
+                    }
+                }
+
+                // 2b: 遍历窗口查找 delegate
+                if (!tg)
+                {
+                    for (UIWindow *w in getAllWindows())
+                    {
+                        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"])
+                        {
+                            continue;
+                        }
+                        NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
+                        while (views.count > 0)
+                        {
+                            UIView *v = [views lastObject];
+                            [views removeLastObject];
+                            if ([v respondsToSelector:@selector(delegate)])
+                            {
+                                id delegate = ((id (*)(id, SEL))objc_msgSend)(v, @selector(delegate));
+                                if ([delegate isKindOfClass:targetClass])
+                                {
+                                    tg = delegate;
+                                    break;
+                                }
+                            }
+                            id responder = v.nextResponder;
+                            while (responder)
+                            {
+                                if ([responder isKindOfClass:targetClass])
+                                {
+                                    tg = responder;
+                                    break;
+                                }
+                                responder = [responder nextResponder];
+                            }
+                            if (tg)
+                            {
+                                break;
+                            }
+                            [views addObjectsFromArray:v.subviews];
+                        }
+                        if (tg)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                // 2c: 从 AppDelegate 查找
+                if (!tg)
+                {
+                    id appDelegate = [UIApplication sharedApplication].delegate;
+                    @try { tg = [appDelegate valueForKey:tvc]; }
+                    @catch (NSException *e) {}
+                }
+            }
+        }
+
+        if ([kp isEqualToString:@"self"] && !tg)
+        {
+            Class targetClass = NSClassFromString(tvc);
+            if (targetClass)
+            {
+                id appDelegate = [UIApplication sharedApplication].delegate;
+                @try { tg = [appDelegate valueForKey:tvc]; }
+                @catch (NSException *e) {}
+            }
+        }
+        else if (tg)
+        {
+            tg = getObjectByKeyPath(tg, kp);
+        }
+
+        if (!tg)
+        {
+            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ 未找到 %@ 实例\n", tvc]];
+            continue;
+        }
+
+        SEL m = NSSelectorFromString(mn);
+        if (![tg respondsToSelector:m])
+        {
+            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n⚠️ %@ 不响应 %@\n", NSStringFromClass([tg class]), mn]];
+            continue;
+        }
+
+        NSMethodSignature *sig = [tg methodSignatureForSelector:m];
+        NSUInteger argCount = sig.numberOfArguments;
+
+        // 打印方法签名
+        NSMutableString *sigLog = [NSMutableString stringWithFormat:@"\n📐 %@.%@\n", NSStringFromClass([tg class]), mn];
+        [sigLog appendFormat:@"  返回值: %s\n", sig.methodReturnType];
+        [sigLog appendFormat:@"  参数数: %lu\n", (unsigned long)argCount];
+        for (NSUInteger i = 0; i < argCount; i++)
+        {
+            const char *type = [sig getArgumentTypeAtIndex:i];
+            [sigLog appendFormat:@"  arg%lu: %s", (unsigned long)i, type];
+            if (i == 0) [sigLog appendString:@" (self)"];
+            else if (i == 1) [sigLog appendString:@" (_cmd)"];
+            else
+            {
+                if (strcmp(type, "@") == 0) [sigLog appendString:@" → id/对象"];
+                else if (strcmp(type, "i") == 0) [sigLog appendString:@" → int"];
+                else if (strcmp(type, "B") == 0) [sigLog appendString:@" → BOOL"];
+                else if (strcmp(type, "q") == 0) [sigLog appendString:@" → NSInteger"];
+                else if (strcmp(type, "d") == 0) [sigLog appendString:@" → double"];
+                else if (strcmp(type, "f") == 0) [sigLog appendString:@" → float"];
+                else if (strcmp(type, "v") == 0) [sigLog appendString:@" → void"];
+                else if (strcmp(type, "Q") == 0) [sigLog appendString:@" → NSUInteger"];
+                else if (strcmp(type, "c") == 0) [sigLog appendString:@" → char"];
+            }
+            [sigLog appendString:@"\n"];
+        }
+
+        // 根据参数个数尝试不同的传参方式
+        BOOL executed = NO;
+        if (argCount <= 2)
+        {
+            // 无参方法
+            [sigLog appendString:@"  ✅ 无参方法，直接调用\n"];
+            ((void (*)(id, SEL))objc_msgSend)(tg, m);
+            executed = YES;
+        }
+        else if (argCount == 3)
+        {
+            const char *type = [sig getArgumentTypeAtIndex:2];
+            if (strcmp(type, "@") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: @\"\" (空字符串)\n"];
+                @try { ((void (*)(id, SEL, id))objc_msgSend)(tg, m, @""); executed = YES; }
+                @catch (NSException *e) { [sigLog appendString:@"  ❌ 传@\"\"异常\n"]; }
+                if (!executed) { ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil); executed = YES; [sigLog appendString:@"  尝试传参: nil\n"]; }
+            }
+            else if (strcmp(type, "B") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: YES (BOOL)\n"];
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(tg, m, YES);
+                executed = YES;
+            }
+            else if (strcmp(type, "i") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: 0 (int)\n"];
+                ((void (*)(id, SEL, int))objc_msgSend)(tg, m, 0);
+                executed = YES;
+            }
+            else if (strcmp(type, "q") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: 0 (NSInteger)\n"];
+                ((void (*)(id, SEL, NSInteger))objc_msgSend)(tg, m, 0);
+                executed = YES;
+            }
+            else if (strcmp(type, "Q") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: 0 (NSUInteger)\n"];
+                ((void (*)(id, SEL, NSUInteger))objc_msgSend)(tg, m, 0);
+                executed = YES;
+            }
+            else if (strcmp(type, "d") == 0)
+            {
+                [sigLog appendString:@"  尝试传参: 0.0 (double)\n"];
+                ((void (*)(id, SEL, double))objc_msgSend)(tg, m, 0.0);
+                executed = YES;
+            }
+            else
+            {
+                [sigLog appendString:[NSString stringWithFormat:@"  尝试传参: nil (未知类型 %s)\n", type]];
+                ((void (*)(id, SEL, id))objc_msgSend)(tg, m, nil);
+                executed = YES;
+            }
+        }
+        else
+        {
+            // 多参数，全部传 nil
+            [sigLog appendString:@"  多参数方法，全部传 nil\n"];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setTarget:tg];
+            [inv setSelector:m];
+            id nilArg = nil;
+            for (NSUInteger i = 2; i < argCount; i++)
+            {
+                [inv setArgument:&nilArg atIndex:i];
+            }
+            [inv invoke];
+            executed = YES;
+        }
+
+        [sigLog appendString:executed ? @"  ✅ 已执行\n" : @"  ❌ 执行失败\n"];
+        [[AdInspectorPanel shared] showLog:sigLog];
     }
     showToast(@"✅ 自定义规则已执行");
 }
