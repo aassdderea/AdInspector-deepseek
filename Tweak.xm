@@ -583,7 +583,23 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
 - (void)forceShow { if (!s_floatWindow) { UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } } if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; s_floatWindow.hidden = NO; } } else { if (!self.superview) { [s_floatWindow addSubview:self]; self.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 360); s_floatWindow.panel = self; } s_floatWindow.hidden = NO; s_floatWindow.alpha = 1.0; [s_floatWindow bringSubviewToFront:self]; } self.hidden = NO; self.alpha = 1.0; showToast(@"👆 面板已呼出"); [self viewRulesTapped]; }
 - (void)showLog:(NSString *)log { dispatch_async(dispatch_get_main_queue(), ^{ [self.logBuffer appendString:log]; if (self.logBuffer.length > 8000) [self.logBuffer deleteCharactersInRange:NSMakeRange(0, self.logBuffer.length - 8000)]; self.logTextView.text = self.logBuffer; if (self.logTextView.text.length > 0) [self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length - 1, 1)]; }); }
 @end
+// ==================== 捕获跳过参数 ====================
+%hook GDTDLRootView
 
+- (void)GDTfunctionu0H2Y8:(NSInteger)arg1 {
+    NSMutableString *log = [NSMutableString string];
+    [log appendFormat:@"\n🎯 捕获到跳过参数!\n"];
+    [log appendFormat:@"方法: GDTfunctionu0H2Y8:\n"];
+    [log appendFormat:@"参数值: %ld\n", (long)arg1];
+    [log appendFormat:@"参数类型: NSInteger\n"];
+    [log appendString:@"💡 自定义规则填: GDTfunctionu0H2Y8:,参数值\n"];
+    [log appendString:@"══════\n"];
+    [[AdInspectorPanel shared] showLog:log];
+    saveToFile(log);
+    %orig;
+}
+
+%end
 // ==================== Hook ====================
 %hook UIGestureRecognizer
 - (void)setState:(UIGestureRecognizerState)state {
