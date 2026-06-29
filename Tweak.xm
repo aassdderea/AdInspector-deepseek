@@ -25,7 +25,11 @@ static Ivar ATFindIvar(Class cls, const char *name)
 static id ATGetObjectIvar(id obj, const char *name)
 {
     Ivar ivar = ATFindIvar(object_getClass(obj), name);
-    return ivar ? object_getIvar(obj, ivar) : nil;
+    if (!ivar)
+    {
+        return NULL;
+    }
+    return object_getIvar(obj, ivar);
 }
 
 static SEL ATGetSelectorIvar(id obj, const char *name)
@@ -37,6 +41,128 @@ static SEL ATGetSelectorIvar(id obj, const char *name)
     }
     ptrdiff_t offset = ivar_getOffset(ivar);
     return *(SEL *)((uint8_t *)(__bridge void *)obj + offset);
+}
+
+// 读取 id 类型的 ivar，返回对象
+static id ATGetObjectIvarDirect(id obj, const char *name)
+{
+    Ivar ivar = ATFindIvar(object_getClass(obj), name);
+    if (!ivar)
+    {
+        return nil;
+    }
+    return object_getIvar(obj, ivar);
+}
+
+// ==================== 增强手势分析 ====================
+static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti)
+{
+    // 方法1: 通过 valueForKey 获取 _targets
+    @try
+    {
+        NSArray *tgts = [gr valueForKey:@"_targets"];
+        if (tgts && [tgts isKindOfClass:[NSArray class]] && tgts.count > 0)
+        {
+            for (id t in tgts)
+            {
+                id target = [t valueForKey:@"_target"];
+                id ao = [t valueForKey:@"_action"];
+                NSString *as = nil;
+                if ([ao isKindOfClass:[NSString class]])
+                {
+                    as = ao;
+                }
+                else if ([ao isKindOfClass:[NSValue class]])
+                {
+                    as = NSStringFromSelector((SEL)[ao pointerValue]);
+                }
+                if (target && as)
+                {
+                    [o appendFormat:@"    → %@.%@ (KVC)\n", NSStringFromClass([target class]), as];
+                    recordMethodCall(as);
+                    [ti addObject:@{
+                        @"viewClass": NSStringFromClass([cur class]),
+                        @"gestureClass": NSStringFromClass([gr class]),
+                        @"targetClass": NSStringFromClass([target class]),
+                        @"action": as
+                    }];
+                    return;
+                }
+            }
+        }
+    }
+    @catch (NSException *e)
+    {
+    }
+
+    // 方法2: 通过 Ivar 直接读取 _targets
+    id targets = ATGetObjectIvarDirect(gr, "_targets");
+    if (targets && [targets isKindOfClass:[NSArray class]] && [(NSArray *)targets count] > 0)
+    {
+        for (id t in (NSArray *)targets)
+        {
+            id target = ATGetObjectIvarDirect(t, "_target");
+            SEL action = ATGetSelectorIvar(t, "_action");
+            if (target && action)
+            {
+                NSString *as = NSStringFromSelector(action);
+                [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as];
+                recordMethodCall(as);
+                [ti addObject:@{
+                    @"viewClass": NSStringFromClass([cur class]),
+                    @"gestureClass": NSStringFromClass([gr class]),
+                    @"targetClass": NSStringFromClass([target class]),
+                    @"action": as
+                }];
+                return;
+            }
+        }
+    }
+
+    // 方法3: 尝试直接访问 recognizer 的 delegate
+    if ([gr respondsToSelector:@selector(delegate)] && gr.delegate)
+    {
+        id delegate = gr.delegate;
+        [o appendFormat:@"    delegate: %@\n", NSStringFromClass([delegate class])];
+        // 尝试查找 delegate 上可能的响应方法
+        NSArray *possibleActions = @[@"handleGesture:", @"handleTap:", @"handleSwipe:", @"onTap:", @"onGesture:", @"skipAction", @"closeAction", @"dismissAction", @"adSkipAction"];
+        for (NSString *actionName in possibleActions)
+        {
+            SEL sel = NSSelectorFromString(actionName);
+            if ([delegate respondsToSelector:sel])
+            {
+                [o appendFormat:@"    → %@.%@ (delegate可能)\n", NSStringFromClass([delegate class]), actionName];
+                recordMethodCall(actionName);
+                [ti addObject:@{
+                    @"viewClass": NSStringFromClass([cur class]),
+                    @"gestureClass": NSStringFromClass([gr class]),
+                    @"targetClass": NSStringFromClass([delegate class]),
+                    @"action": actionName
+                }];
+                return;
+            }
+        }
+    }
+
+    // 方法4: 尝试通过 NSInvocation 或其他方式
+    @try
+    {
+        // 尝试获取 _gestureFlags 或 _targets 的其他可能名称
+        NSArray *ivarNames = @[@"_targets", @"_target", @"_action", @"targets", @"targetActions", @"_targetActions"];
+        for (NSString *ivarName in ivarNames)
+        {
+            id val = ATGetObjectIvarDirect(gr, [ivarName UTF8String]);
+            if (val)
+            {
+                [o appendFormat:@"    ivar %@: %@\n", ivarName, val];
+            }
+        }
+    }
+    @catch (NSException *e)
+    {
+    }
+
+    [o appendString:@"    (无法提取)\n"];
 }
 
 // ==================== 获取所有窗口 ====================
@@ -156,6 +282,7 @@ static void saveCustomRule(NSDictionary *r);
 static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
+static void analyzeGestureRecognizer(UIGestureRecognizer *gr, UIView *cur, NSMutableString *o, NSMutableArray *ti);
 
 static NSDate *s_lastAnalysisTime = nil;
 static const NSTimeInterval kMinAnalysisInterval = 0.3;
@@ -215,7 +342,7 @@ static AdInspectorWindow *s_floatWindow = nil;
     }
     while (hit && (id)hit != (id)self.panel)
     {
-        if (hit.tag >= 1001 && hit.tag <= 1020)
+        if (hit.tag >= 1001 && hit.tag <= 1025)
         {
             return hit;
         }
@@ -248,6 +375,7 @@ static AdInspectorWindow *s_floatWindow = nil;
 - (void)hidePanel;
 - (void)addCustomRuleFromFields;
 - (void)testCustomRules;
+- (void)copyLog;
 @end
 
 @implementation AdInspectorPanel
@@ -278,12 +406,22 @@ static AdInspectorWindow *s_floatWindow = nil;
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbShow:) name:UIKeyboardWillShowNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kbHide:) name:UIKeyboardWillHideNotification object:nil];
 
-        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 260, 20)];
+        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 200, 20)];
         t.text = @"🔍 AdInspector | 编辑+追踪";
         t.textColor = [UIColor cyanColor];
         t.font = [UIFont boldSystemFontOfSize:12];
         t.tag = 1001;
         [self addSubview:t];
+
+        // 复制按钮
+        UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        copyBtn.frame = CGRectMake(self.bounds.size.width - 180, 3, 45, 30);
+        [copyBtn setTitle:@"📋复制" forState:UIControlStateNormal];
+        [copyBtn setTitleColor:[UIColor colorWithRed:0.0 green:1.0 blue:0.5 alpha:1.0] forState:UIControlStateNormal];
+        copyBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        copyBtn.tag = 1021;
+        [copyBtn addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:copyBtn];
 
         UILabel *l1 = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, 80, 20)];
         l1.text = @"目标视图类:";
@@ -488,6 +626,18 @@ static AdInspectorWindow *s_floatWindow = nil;
     self.targetViewField.text = @"GDTDLRootView";
     self.keyPathField.text = @"delegate";
     self.methodNameField.text = @"pauseTimer";
+}
+
+- (void)copyLog
+{
+    NSString *text = self.logBuffer;
+    if (text.length == 0)
+    {
+        showToast(@"⚠️ 日志为空");
+        return;
+    }
+    [[UIPasteboard generalPasteboard] setString:text];
+    showToast(@"✅ 日志已复制到剪贴板");
 }
 
 - (void)addCustomRuleFromFields
@@ -796,7 +946,7 @@ static UIView *findMatchingView(UIView *rt, NSDictionary *r)
 {
     if ([rt isKindOfClass:[AdInspectorPanel class]] ||
         [NSStringFromClass([rt.window class]) isEqualToString:@"AdInspectorWindow"] ||
-        (rt.tag >= 1001 && rt.tag <= 1020))
+        (rt.tag >= 1001 && rt.tag <= 1025))
     {
         return nil;
     }
@@ -1023,7 +1173,7 @@ static BOOL isSkipText(NSString *t)
     {
         return NO;
     }
-    for (NSString *k in @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip"])
+    for (NSString *k in @[@"跳过", @"广告", @"关闭", @"×", @"x", @"X", @"close", @"skip", @"Skip", @"Close", @"SKIP", @"CLOSE"])
     {
         if ([t rangeOfString:k options:NSCaseInsensitiveSearch].location != NSNotFound && t.length <= 15)
         {
@@ -1035,7 +1185,7 @@ static BOOL isSkipText(NSString *t)
 
 static UIView *findSkipLabelInView(UIView *rt)
 {
-    if ([rt isKindOfClass:[AdInspectorPanel class]] || (rt.tag >= 1001 && rt.tag <= 1020))
+    if ([rt isKindOfClass:[AdInspectorPanel class]] || (rt.tag >= 1001 && rt.tag <= 1025))
     {
         return nil;
     }
@@ -1076,7 +1226,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
     }
     if ([v isDescendantOfView:[AdInspectorPanel shared]] ||
         [NSStringFromClass([v.window class]) isEqualToString:@"AdInspectorWindow"] ||
-        (v.tag >= 1001 && v.tag <= 1020))
+        (v.tag >= 1001 && v.tag <= 1025))
     {
         return;
     }
@@ -1185,72 +1335,7 @@ static void analyzeTouchView(UIView *v, CGPoint pt)
             {
                 fd = YES;
                 [o appendFormat:@"  [%@] 手势:%@ (en:%d ct:%d)\n", NSStringFromClass([cur class]), NSStringFromClass([gr class]), gr.enabled, gr.cancelsTouchesInView];
-                BOOL gti = NO;
-                @try
-                {
-                    NSArray *tgts = [gr valueForKey:@"_targets"];
-                    if (tgts && [tgts isKindOfClass:[NSArray class]])
-                    {
-                        for (id t in tgts)
-                        {
-                            id target = [t valueForKey:@"_target"];
-                            id ao = [t valueForKey:@"_action"];
-                            NSString *as = nil;
-                            if ([ao isKindOfClass:[NSString class]])
-                            {
-                                as = ao;
-                            }
-                            else if ([ao isKindOfClass:[NSValue class]])
-                            {
-                                as = NSStringFromSelector((SEL)[ao pointerValue]);
-                            }
-                            if (target && as)
-                            {
-                                [o appendFormat:@"    → %@.%@\n", NSStringFromClass([target class]), as];
-                                recordMethodCall(as);
-                                [ti addObject:@{
-                                    @"viewClass": NSStringFromClass([cur class]),
-                                    @"gestureClass": NSStringFromClass([gr class]),
-                                    @"targetClass": NSStringFromClass([target class]),
-                                    @"action": as
-                                }];
-                                gti = YES;
-                            }
-                        }
-                    }
-                }
-                @catch (NSException *e)
-                {
-                }
-                if (!gti)
-                {
-                    id targets = ATGetObjectIvar(gr, "_targets");
-                    if (targets && [targets isKindOfClass:[NSArray class]])
-                    {
-                        for (id t in targets)
-                        {
-                            id target = ATGetObjectIvar(t, "_target");
-                            SEL action = ATGetSelectorIvar(t, "_action");
-                            if (target && action)
-                            {
-                                NSString *as = NSStringFromSelector(action);
-                                [o appendFormat:@"    → %@.%@ (Ivar)\n", NSStringFromClass([target class]), as];
-                                recordMethodCall(as);
-                                [ti addObject:@{
-                                    @"viewClass": NSStringFromClass([cur class]),
-                                    @"gestureClass": NSStringFromClass([gr class]),
-                                    @"targetClass": NSStringFromClass([target class]),
-                                    @"action": as
-                                }];
-                                gti = YES;
-                            }
-                        }
-                    }
-                }
-                if (!gti)
-                {
-                    [o appendString:@"    (无法提取)\n"];
-                }
+                analyzeGestureRecognizer(gr, cur, o, ti);
             }
             cur = cur.superview;
             d++;
