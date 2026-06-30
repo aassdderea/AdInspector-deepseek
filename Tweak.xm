@@ -57,7 +57,7 @@ static void logMsg(NSString *m) {
         label.userInteractionEnabled = NO;
         
         UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        w.windowLevel = UIWindowLevelAlert + 1;
+        w.windowLevel = CGFLOAT_MAX;
         w.backgroundColor = [UIColor clearColor];
         w.hidden = NO;
         [w addSubview:label];
