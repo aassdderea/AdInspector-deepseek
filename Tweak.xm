@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <mach/mach_time.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dlfcn.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
