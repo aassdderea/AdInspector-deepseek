@@ -1,4 +1,4 @@
-name: Build TapSimulator Dylib
+name: Build RealTouch Dylib
 
 on:
   push:
@@ -35,8 +35,14 @@ jobs:
         make clean
         make
 
+    - name: Find dylib
+      run: |
+        find . -name "*.dylib" -type f
+        ls -la .theos/obj/debug/ 2>/dev/null || echo "no debug dir"
+        ls -la .theos/obj/ 2>/dev/null || echo "no obj dir"
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: TapSimulator.dylib
-        path: .theos/obj/debug/TapSimulator.dylib
+        name: RealTouch.dylib
+        path: "**/*.dylib"
