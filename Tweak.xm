@@ -210,9 +210,14 @@ static void applyCustomRules(void) {
         if(!tvc||!kp||!mn)continue;
         BOOL probeMode=[mn hasPrefix:@"?"];
         NSString *cleanMethod=probeMode?[mn substringFromIndex:1]:mn;
-        NSString *actualMethod=cleanMethod,*paramStr=nil;
+        NSString *actualMethod=cleanMethod;
+        NSArray *params=nil;
         NSRange crange=[cleanMethod rangeOfString:@"," options:NSBackwardsSearch];
-        if(crange.location!=NSNotFound){NSString *after=[cleanMethod substringFromIndex:crange.location+1]; if(after.length>0){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=after;}}
+        if(crange.location!=NSNotFound){
+            actualMethod=[cleanMethod substringToIndex:crange.location];
+            NSString *paramPart=[cleanMethod substringFromIndex:crange.location+1];
+            params=[paramPart componentsSeparatedByString:@":"];
+        }
 
         if([actualMethod isEqualToString:@"__SKIP_AD__"]){
             UIView *skipLabel=nil;
@@ -236,6 +241,29 @@ static void applyCustomRules(void) {
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
         if(probeMode){NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod]; [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac]; for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t]; if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"]; else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}} [log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;}
         NSString *logMsg=nil;
+                NSString *logMsg=nil;
+
+        // 多参数执行（参数用:分隔，如方法名,1:0 表示arg3=1 arg4="0"）
+        if(params && params.count>1 && ac==params.count+2){
+            NSInvocation *inv=[NSInvocation invocationWithMethodSignature:sig];
+            [inv setTarget:tg];[inv setSelector:m];
+            for(NSUInteger i=0;i<params.count;i++){
+                NSString *p=[params[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                const char *t=[sig getArgumentTypeAtIndex:i+2];
+                if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[p integerValue];[inv setArgument:&v atIndex:i+2];}
+                else if(t[0]=='B'||t[0]=='c'){BOOL v=[p boolValue];[inv setArgument:&v atIndex:i+2];}
+                else if(t[0]=='d'){double v=[p doubleValue];[inv setArgument:&v atIndex:i+2];}
+                else if(t[0]=='f'){float v=[p floatValue];[inv setArgument:&v atIndex:i+2];}
+                else{id v=p;[inv setArgument:&v atIndex:i+2];}
+            }
+            [inv invoke];
+            logMsg=[NSString stringWithFormat:@"✅ %@.%@ (%lu个参数) 已执行",NSStringFromClass([tg class]),actualMethod,(unsigned long)params.count];
+            showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);
+            [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",logMsg]];
+            continue;
+        }
+
+        if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2]; if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[paramStr integerValue];((void(*)(id,SEL,NSInteger))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSInteger:%ld",NSStringFromClass([tg class]),actualMethod,(long)v]; showToast([NSString stringWithFormat:@"✅ %@(%ld)",actualMethod,(long)v]);} else if(t[0]=='B'||t[0]=='c'){BOOL v=([paramStr intValue]!=0)||[paramStr boolValue];((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ BOOL:%d",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%d)",actualMethod,v]);} else if(t[0]=='d'){double v=[paramStr doubleValue];((void(*)(id,SEL,double))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ double:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='f'){float v=[paramStr floatValue];((void(*)(id,SEL,float))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ float:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='@'){NSNumberFormatter *nf=[[NSNumberFormatter alloc]init]; NSNumber *num=[nf numberFromString:paramStr]; if(num){((void(*)(id,SEL,id))objc_msgSend)(tg,m,num); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSNumber:%@",NSStringFromClass([tg class]),actualMethod,num];}else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSString:\"%@\"",NSStringFromClass([tg class]),actualMethod,paramStr];} showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);} else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 传NSString(未知类型%s)",NSStringFromClass([tg class]),actualMethod,t]; showToast([NSString stringWithFormat:@"⚠️ %@",actualMethod]);}}
         else if(ac==3&&!paramStr){((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 参数:nil 缺参数",NSStringFromClass([tg class]),actualMethod]; showToast(@"⚠️ 缺参数");}
