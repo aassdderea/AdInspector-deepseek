@@ -185,10 +185,7 @@ static NSString *getControlEventName(UIControlEvents e) { switch(e){case UIContr
 static void saveToFile(NSString *log) {
     @try{NSArray *p=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES); if(!p.count)return; NSString *pt=[p[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"]; NSFileHandle *f=[NSFileHandle fileHandleForWritingAtPath:pt]; if(!f){[[NSData data] writeToFile:pt atomically:YES]; f=[NSFileHandle fileHandleForWritingAtPath:pt];} if(f){[f seekToEndOfFile];[f writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];[f closeFile];}}@catch(NSException *e){}
 }
-static void highlightView(UIView *v) {
-    if(!v)return; UIColor *oc=nil; CGColorRef og=v.layer.borderColor; if(og)oc=[UIColor colorWithCGColor:og]; CGFloat ow=v.layer.borderWidth; v.layer.borderColor=[UIColor redColor].CGColor; v.layer.borderWidth=3.0;
-    __weak UIView *wv=v; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ __strong UIView *sv=wv; if(sv){sv.layer.borderColor=oc?oc.CGColor:NULL; sv.layer.borderWidth=ow;} });
-}
+static void highlightView(UIView *v) { if(!v)return; UIColor *oc=nil; CGColorRef og=v.layer.borderColor; if(og)oc=[UIColor colorWithCGColor:og]; CGFloat ow=v.layer.borderWidth; v.layer.borderColor=[UIColor redColor].CGColor; v.layer.borderWidth=3.0; __weak UIView *wv=v; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ __strong UIView *sv=wv; if(sv){sv.layer.borderColor=oc?oc.CGColor:NULL; sv.layer.borderWidth=ow;} }); }
 static void saveRule(NSDictionary *r) { NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *ex=[ud arrayForKey:kRulesKey]?:@[]; NSInteger ei=-1; for(NSInteger i=0;i<ex.count;i++){NSDictionary *x=ex[i]; if([x[@"buttonClass"]isEqualToString:r[@"buttonClass"]]&&[x[@"buttonTextPattern"]isEqualToString:r[@"buttonTextPattern"]]&&[x[@"hierarchyChain"]isEqualToArray:r[@"hierarchyChain"]]){ei=i;break;}} NSMutableArray *nr=[ex mutableCopy]; if(ei>=0){[nr replaceObjectAtIndex:ei withObject:r]; showToast(@"🔄 规则已更新");}else{[nr addObject:r]; showToast([NSString stringWithFormat:@"✅ 已学习：%@",r[@"buttonTextPattern"]]);} [ud setObject:nr forKey:kRulesKey];[ud synchronize]; }
 static UIView *findMatchingView(UIView *rt,NSDictionary *r) { if([rt isKindOfClass:[AdInspectorPanel class]]||[NSStringFromClass([rt.window class])isEqualToString:@"AdInspectorWindow"]||(rt.tag>=1001&&rt.tag<=1030))return nil; NSString *tc=r[@"buttonClass"],*tp=r[@"buttonTextPattern"]; NSArray *ch=r[@"hierarchyChain"]; if([NSStringFromClass([rt class])isEqualToString:tc]){ NSString *ct=nil; if([rt isKindOfClass:[UIButton class]])ct=[(UIButton*)rt titleForState:UIControlStateNormal]; else if([rt isKindOfClass:[UILabel class]])ct=[(UILabel*)rt text]?:[(UILabel*)rt attributedText].string; else ct=rt.accessibilityLabel; if(ct){BOOL tm=(tp.length<=2)?[ct isEqualToString:tp]:([ct rangeOfString:tp].location!=NSNotFound&&ct.length<=15); if(tm){NSMutableArray *cc=[NSMutableArray array]; UIView *cur=rt; while(cur&&![cur isKindOfClass:[UIWindow class]]){[cc addObject:NSStringFromClass([cur class])];cur=cur.superview;} if([cc isEqualToArray:ch])return rt;}} } for(UIView *sb in rt.subviews){UIView *f=findMatchingView(sb,r); if(f)return f;} return nil; }
 static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; [[NSUserDefaults standardUserDefaults] synchronize]; }
@@ -239,11 +236,16 @@ static void applyCustomRules(void) {
         SEL m=NSSelectorFromString(actualMethod);
         if(![tg respondsToSelector:m]){NSString *msg=[NSString stringWithFormat:@"❌ %@ 不响应 %@",NSStringFromClass([tg class]),actualMethod]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
-        if(probeMode){NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod]; [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac]; for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t]; if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"]; else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}} [log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;}
-        NSString *logMsg=nil;
-                NSString *logMsg=nil;
 
-        // 多参数执行（参数用:分隔，如方法名,1:0 表示arg3=1 arg4="0"）
+        if(probeMode){
+            NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod];
+            [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac];
+            for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t]; if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"]; else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}}
+            [log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;
+        }
+
+        NSString *logMsg=nil;
+        // 多参数执行
         if(params && params.count>1 && ac==params.count+2){
             NSInvocation *inv=[NSInvocation invocationWithMethodSignature:sig];
             [inv setTarget:tg];[inv setSelector:m];
@@ -262,11 +264,9 @@ static void applyCustomRules(void) {
             [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",logMsg]];
             continue;
         }
-
         if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
-        if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
-        else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2]; if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[paramStr integerValue];((void(*)(id,SEL,NSInteger))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSInteger:%ld",NSStringFromClass([tg class]),actualMethod,(long)v]; showToast([NSString stringWithFormat:@"✅ %@(%ld)",actualMethod,(long)v]);} else if(t[0]=='B'||t[0]=='c'){BOOL v=([paramStr intValue]!=0)||[paramStr boolValue];((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ BOOL:%d",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%d)",actualMethod,v]);} else if(t[0]=='d'){double v=[paramStr doubleValue];((void(*)(id,SEL,double))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ double:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='f'){float v=[paramStr floatValue];((void(*)(id,SEL,float))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ float:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='@'){NSNumberFormatter *nf=[[NSNumberFormatter alloc]init]; NSNumber *num=[nf numberFromString:paramStr]; if(num){((void(*)(id,SEL,id))objc_msgSend)(tg,m,num); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSNumber:%@",NSStringFromClass([tg class]),actualMethod,num];}else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSString:\"%@\"",NSStringFromClass([tg class]),actualMethod,paramStr];} showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);} else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 传NSString(未知类型%s)",NSStringFromClass([tg class]),actualMethod,t]; showToast([NSString stringWithFormat:@"⚠️ %@",actualMethod]);}}
-        else if(ac==3&&!paramStr){((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 参数:nil 缺参数",NSStringFromClass([tg class]),actualMethod]; showToast(@"⚠️ 缺参数");}
+        else if(ac==3&&params&&params.count==1){NSString *paramStr=params[0]; const char *t=[sig getArgumentTypeAtIndex:2]; if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[paramStr integerValue];((void(*)(id,SEL,NSInteger))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSInteger:%ld",NSStringFromClass([tg class]),actualMethod,(long)v]; showToast([NSString stringWithFormat:@"✅ %@(%ld)",actualMethod,(long)v]);} else if(t[0]=='B'||t[0]=='c'){BOOL v=([paramStr intValue]!=0)||[paramStr boolValue];((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ BOOL:%d",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%d)",actualMethod,v]);} else if(t[0]=='d'){double v=[paramStr doubleValue];((void(*)(id,SEL,double))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ double:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='f'){float v=[paramStr floatValue];((void(*)(id,SEL,float))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ float:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='@'){NSNumberFormatter *nf=[[NSNumberFormatter alloc]init]; NSNumber *num=[nf numberFromString:paramStr]; if(num){((void(*)(id,SEL,id))objc_msgSend)(tg,m,num); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSNumber:%@",NSStringFromClass([tg class]),actualMethod,num];}else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSString:\"%@\"",NSStringFromClass([tg class]),actualMethod,paramStr];} showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);} else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 传NSString(未知类型%s)",NSStringFromClass([tg class]),actualMethod,t]; showToast([NSString stringWithFormat:@"⚠️ %@",actualMethod]);}}
+        else if(ac==3&&(!params||params.count==0)){((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 参数:nil 缺参数",NSStringFromClass([tg class]),actualMethod]; showToast(@"⚠️ 缺参数");}
         else{NSInvocation *inv=[NSInvocation invocationWithMethodSignature:sig];[inv setTarget:tg];[inv setSelector:m]; id nilArg=nil; for(NSUInteger i=2;i<ac;i++)[inv setArgument:&nilArg atIndex:i];[inv invoke]; logMsg=[NSString stringWithFormat:@"✅ %@.%@ (%lu参nil)",NSStringFromClass([tg class]),actualMethod,(unsigned long)(ac-2)]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",logMsg]];
     }
@@ -294,7 +294,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
     UILabel *l2=[[UILabel alloc]initWithFrame:CGRectMake(12,64,80,20)];l2.text=@"KVC路径:";l2.textColor=[UIColor whiteColor];l2.font=[UIFont systemFontOfSize:11];[self addSubview:l2];
     _keyPathField=[[UITextField alloc]initWithFrame:CGRectMake(95,62,self.bounds.size.width-110,26)];_keyPathField.borderStyle=UITextBorderStyleRoundedRect;_keyPathField.backgroundColor=[UIColor darkGrayColor];_keyPathField.textColor=[UIColor whiteColor];_keyPathField.font=[UIFont systemFontOfSize:12];_keyPathField.placeholder=@"如 self";_keyPathField.tag=1012;_keyPathField.delegate=self;[self addSubview:_keyPathField];
     UILabel *l3=[[UILabel alloc]initWithFrame:CGRectMake(12,94,80,20)];l3.text=@"方法名:";l3.textColor=[UIColor whiteColor];l3.font=[UIFont systemFontOfSize:11];[self addSubview:l3];
-    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?探测 / 方法,参数 / __SKIP_AD__";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
+    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?探测 / 方法,arg1:arg2 / __SKIP_AD__";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
     UIButton *addBtn=[UIButton buttonWithType:UIButtonTypeSystem];addBtn.frame=CGRectMake(12,126,60,30);[addBtn setTitle:@"添加" forState:UIControlStateNormal];[addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];addBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];addBtn.tag=1014;[addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside];[self addSubview:addBtn];
     UIButton *testBtn=[UIButton buttonWithType:UIButtonTypeSystem];testBtn.frame=CGRectMake(80,126,60,30);[testBtn setTitle:@"测试" forState:UIControlStateNormal];[testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];testBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];testBtn.tag=1015;[testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];[self addSubview:testBtn];
     UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(148,126,60,30);[p1 setTitle:@"预设1" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:11];p1.tag=1016;[p1 addTarget:self action:@selector(fillPreset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
@@ -341,10 +341,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
         if (skipView) {
             NSMutableString *log = [NSMutableString string];
             [log appendFormat:@"\n🔔 手势触发! %@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
-            @try {
-                id d = self.delegate;
-                if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])];
-            } @catch (NSException *e) {}
+            @try { id d = self.delegate; if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])]; } @catch (NSException *e) {}
             [log appendString:@"══════\n"];
             [[AdInspectorPanel shared] showLog:log];
             saveToFile(log);
@@ -360,12 +357,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
         NSSet *ts = [e allTouches];
         if (ts.count >= 2) {
             BOOL as = YES;
-            for (UITouch *t in ts) {
-                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
-                    as = NO;
-                    break;
-                }
-            }
+            for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } }
             if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
             if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
                 AdInspectorPanel *p = [AdInspectorPanel shared];
@@ -373,9 +365,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
                 s_twoFingerStart = nil;
                 s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
             }
-        } else {
-            s_twoFingerStart = nil;
-        }
+        } else { s_twoFingerStart = nil; }
         if (ts.count == 1) {
             UITouch *t = [ts anyObject];
             if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) {
@@ -399,10 +389,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
-                as = (UIWindowScene *)s;
-                break;
-            }
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; }
         }
         if (as) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
