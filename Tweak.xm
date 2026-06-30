@@ -47,6 +47,7 @@ static TestWindow *s_window = nil;
     double px = x * scale, py = y * scale;
     logMsg([NSString stringWithFormat:@"\n🖐 测试坐标 (%.0f, %.0f)", x, y]);
     
+    // IOKit
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         @try {
             uint64_t ts = mach_absolute_time();
@@ -59,24 +60,32 @@ static TestWindow *s_window = nil;
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"IOKit异常: %@", e.reason]); }
     }
     
-    if (GSSendEventPtr && IOHIDEventCreateDigitizerFingerEventPtr) {
+    // GSSendEvent: 尝试不同大小的 GSEventRecord
+    if (GSSendEventPtr && GSEventCreateWithEventRecordPtr) {
         @try {
-            IOHIDEventRef hid = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
-            if (hid) {
-                ((void (*)(void *))GSSendEventPtr)((void *)hid);
-                logMsg(@"GSSendEvent ✅");
-                CFRelease(hid);
+            int sizes[] = {72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160};
+            BOOL found = NO;
+            for (int i = 0; i < 12 && !found; i++) {
+                void *buf = calloc(1, sizes[i]);
+                *(int *)buf = 3001;                          // type
+                *((int *)buf + 1) = 1;                       // subtype (began)
+                *((uint64_t *)(buf + 8)) = mach_absolute_time(); // timestamp
+                *((CGFloat *)(buf + 24)) = x;                // location.x
+                *((CGFloat *)(buf + 32)) = y;                // location.y
+                if (sizes[i] >= 56) {
+                    *((CGFloat *)(buf + 40)) = 1.0;          // pressure
+                    *((int *)(buf + 52)) = 1;                // tapCount
+                }
+                void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf);
+                if (gs) {
+                    ((void (*)(void *))GSSendEventPtr)(gs);
+                    logMsg([NSString stringWithFormat:@"GSSendEvent(%d字节) ✅", sizes[i]]);
+                    found = YES;
+                }
+                free(buf);
             }
+            if (!found) logMsg(@"GSSendEvent 所有大小都失败 ❌");
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"GSEvent异常: %@", e.reason]); }
-    }
-    
-    Class AXUIElement = NSClassFromString(@"AXUIElement");
-    if (AXUIElement) {
-        @try {
-            id elem = ((id (*)(id, SEL, void *))objc_msgSend)(AXUIElement, NSSelectorFromString(@"elementWithAXUIElementRef:"), NULL);
-            if (elem) { ((void (*)(id, SEL, int))objc_msgSend)(elem, NSSelectorFromString(@"performAction:"), 1); logMsg(@"AXUIElement ✅"); }
-            else { logMsg(@"AXUIElement ❌"); }
-        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"AX: %@", e.reason]); }
     }
     
     UIView *circle = [[UIView alloc] initWithFrame:CGRectMake(x - 15, y - 15, 30, 30)];
