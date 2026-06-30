@@ -123,7 +123,7 @@ static void syntheticTap(CGFloat x, CGFloat y) {
         gestureManager = [NSClassFromString(@"SBSystemGestureManager") performSelector:@selector(sharedInstance)];
     }
     if (!gestureManager) {
-        gestureManager = objc_msgSend(objc_getClass("SBSystemGestureManager"), @selector(sharedInstance));
+        gestureManager = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("SBSystemGestureManager"), @selector(sharedInstance));
     }
     
     if (gestureManager) {
