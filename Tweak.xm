@@ -6,32 +6,6 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 
-// ==================== IOKit 函数指针 ====================
-typedef struct __IOHIDEvent *IOHIDEventRef;
-typedef struct IOHIDEventSystemClient *IOHIDEventSystemClientRef;
-
-static IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEventPtr)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double) = NULL;
-static IOHIDEventSystemClientRef (*IOHIDEventSystemClientCreatePtr)(CFAllocatorRef) = NULL;
-static void (*IOHIDEventSystemClientDispatchEventPtr)(IOHIDEventSystemClientRef, IOHIDEventRef) = NULL;
-static BOOL s_iokitAvailable = NO;
-static BOOL s_forceUIKit = YES;
-
-static void loadIOKitIfNeeded(void) {
-    static BOOL tried = NO;
-    if (tried) return;
-    tried = YES;
-    void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
-    if (!handle) handle = dlopen("/System/Library/PrivateFrameworks/IOKit.framework/IOKit", RTLD_NOW);
-    if (!handle) handle = dlopen("/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit", RTLD_NOW);
-    if (!handle) return;
-    IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(handle, "IOHIDEventCreateDigitizerFingerEvent");
-    IOHIDEventSystemClientCreatePtr = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(handle, "IOHIDEventSystemClientCreate");
-    IOHIDEventSystemClientDispatchEventPtr = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(handle, "IOHIDEventSystemClientDispatchEvent");
-    if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
-        s_iokitAvailable = YES;
-    }
-}
-
 // ==================== 全局配置 ====================
 static NSArray *s_tapConfigs = nil;
 static BOOL s_isExecuting = NO;
@@ -42,14 +16,12 @@ static BOOL s_isExecuting = NO;
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableString *logBuffer;
 @property (nonatomic, strong) UITextField *configField;
-@property (nonatomic, strong) UISwitch *forceUIKitSwitch;
 + (instancetype)shared;
 - (void)showLog:(NSString *)log;
 - (void)forceShow;
 - (void)hidePanel;
 - (void)executeTaps;
 - (void)clearLog;
-- (void)switchChanged:(UISwitch *)s;
 @end
 
 @interface TapControllerWindow : UIWindow
@@ -105,8 +77,115 @@ static void showTapIndicator(CGFloat x, CGFloat y) {
     });
 }
 
-// ==================== 点击 ====================
+// ==================== SBSyntheticTouch 真实触摸注入 ====================
+static BOOL s_syntheticTouchAvailable = NO;
+
+static BOOL loadSyntheticTouch(void) {
+    static BOOL tried = NO;
+    if (tried) return s_syntheticTouchAvailable;
+    tried = YES;
+    // SBSyntheticTouch 在 SpringBoard 的私有框架里，但通过 RTLD_DEFAULT 可以拿到
+    Class cls = NSClassFromString(@"SBSyntheticTouch");
+    if (!cls) cls = objc_getClass("SBSyntheticTouch");
+    if (cls) {
+        s_syntheticTouchAvailable = YES;
+        [[TapControllerPanel shared] showLog:@"✅ SBSyntheticTouch 可用\n"];
+    } else {
+        [[TapControllerPanel shared] showLog:@"⚠️ SBSyntheticTouch 不可用，降级到 UIKit\n"];
+    }
+    return s_syntheticTouchAvailable;
+}
+
+static void syntheticTap(CGFloat x, CGFloat y) {
+    Class SBSyntheticTouch = NSClassFromString(@"SBSyntheticTouch");
+    if (!SBSyntheticTouch) SBSyntheticTouch = objc_getClass("SBSyntheticTouch");
+    
+    if (!SBSyntheticTouch) {
+        [[TapControllerPanel shared] showLog:@"❌ SBSyntheticTouch 类不存在\n"];
+        return;
+    }
+    
+    CGPoint pt = CGPointMake(x, y);
+    
+    // 创建合成触摸对象
+    id touchBegan = [[SBSyntheticTouch alloc] init];
+    [touchBegan setValue:@(UITouchPhaseBegan) forKey:@"phase"];
+    [touchBegan setValue:@(UITouchTypeDirect) forKey:@"touchType"];
+    [touchBegan setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
+    [touchBegan setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
+    [touchBegan setValue:@(mach_absolute_time()) forKey:@"timestamp"];
+    [touchBegan setValue:@(1) forKey:@"tapCount"];
+    
+    // 通过 SBSystemGestureManager 发送
+    id gestureManager = [NSClassFromString(@"SBSystemGestureManager") valueForKey:@"sharedInstance"];
+    if (!gestureManager) {
+        gestureManager = [NSClassFromString(@"SBSystemGestureManager") performSelector:@selector(sharedInstance)];
+    }
+    if (!gestureManager) {
+        gestureManager = objc_msgSend(objc_getClass("SBSystemGestureManager"), @selector(sharedInstance));
+    }
+    
+    if (gestureManager) {
+        // 发送触摸开始
+        [gestureManager performSelector:@selector(handleTouchEvent:) withObject:touchBegan];
+        
+        // 50ms 后发送触摸结束
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id touchEnded = [[SBSyntheticTouch alloc] init];
+            [touchEnded setValue:@(UITouchPhaseEnded) forKey:@"phase"];
+            [touchEnded setValue:@(UITouchTypeDirect) forKey:@"touchType"];
+            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
+            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
+            [touchEnded setValue:@(mach_absolute_time()) forKey:@"timestamp"];
+            [touchEnded setValue:@(1) forKey:@"tapCount"];
+            
+            [gestureManager performSelector:@selector(handleTouchEvent:) withObject:touchEnded];
+            
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟣 SBSyntheticTouch (%.0f,%.0f) ✅\n", x, y]];
+            showTapIndicator(x, y);
+        });
+        return;
+    }
+    
+    // SBSystemGestureManager 不可用，降级到直接发送触摸到窗口
+    UIWindow *targetWindow = nil;
+    UIView *hitView = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in [(UIWindowScene *)s windows]) {
+            if (w.hidden || w.alpha < 0.01 || [NSStringFromClass([w class]) isEqualToString:@"TapControllerWindow"]) continue;
+            CGPoint localPt = [w convertPoint:pt fromWindow:nil];
+            if (CGRectContainsPoint(w.bounds, localPt)) { hitView = [w hitTest:localPt withEvent:nil]; if (hitView) { targetWindow = w; break; } }
+        }
+        if (hitView) break;
+    }
+    if (hitView && targetWindow) {
+        // 直接调用 touchesBegan/Ended
+        [hitView touchesBegan:[NSSet setWithObject:touchBegan] withEvent:nil];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id touchEnded = [[SBSyntheticTouch alloc] init];
+            [touchEnded setValue:@(UITouchPhaseEnded) forKey:@"phase"];
+            [touchEnded setValue:@(UITouchTypeDirect) forKey:@"touchType"];
+            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
+            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
+            [hitView touchesEnded:[NSSet setWithObject:touchEnded] withEvent:nil];
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟣 SyntheticTouch 直接发送 (%.0f,%.0f) ✅\n", x, y]];
+            showTapIndicator(x, y);
+        });
+        return;
+    }
+    
+    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) SyntheticTouch 失败\n", x, y]];
+}
+
+// ==================== 点击入口 ====================
 static void simulateTap(CGFloat x, CGFloat y) {
+    if (s_syntheticTouchAvailable) {
+        syntheticTap(x, y);
+        return;
+    }
+    
+    // 降级到 UIKit
     CGPoint pt = CGPointMake(x, y);
     UIWindow *targetWindow = nil;
     UIView *hitView = nil;
@@ -123,84 +202,33 @@ static void simulateTap(CGFloat x, CGFloat y) {
         [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) ❌ 无视图\n", x, y]];
         return;
     }
-    
-    // UIControl 优先
     UIView *check = hitView;
     for (int i = 0; i < 5 && check && check != targetWindow; i++) {
         if ([check isKindOfClass:[UIControl class]]) {
-            UIControl *ctrl = (UIControl *)check;
-            @try {
-                [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
-            } @catch (NSException *e) {
-                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UIControl 异常: %@\n", e.reason]];
-            }
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) → %@ ✅\n", x, y, NSStringFromClass([check class])]];
+            @try { [(UIControl *)check sendActionsForControlEvents:UIControlEventTouchUpInside]; }
+            @catch (NSException *e) { [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UIControl 异常: %@\n", e.reason]]; }
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) ✅\n", x, y]];
             showTapIndicator(x, y);
             return;
         }
         check = check.superview;
     }
-    
-    // 手势
     UIView *gv = hitView;
     for (int i = 0; i < 5 && gv && gv != targetWindow; i++) {
         for (UIGestureRecognizer *gr in gv.gestureRecognizers) {
             if (gr.enabled) {
                 @try {
                     [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
-                    });
-                } @catch (NSException *e) {
-                    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ 手势异常: %@\n", e.reason]];
-                }
-                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) → %@ ✅\n", x, y, NSStringFromClass([gv class])]];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"]; });
+                } @catch (NSException *e) {}
+                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) ✅\n", x, y]];
                 showTapIndicator(x, y);
                 return;
             }
         }
         gv = gv.superview;
     }
-    
-    // IOKit
-    if (s_iokitAvailable && !s_forceUIKit) {
-        CGFloat scale = [UIScreen mainScreen].scale;
-        double px = x * scale, py = y * scale;
-        uint64_t ts = mach_absolute_time();
-        IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
-        if (down) { IOHIDEventSystemClientRef c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, down); CFRelease(c); } CFRelease(down); }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            uint64_t ts2 = mach_absolute_time();
-            IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts2, 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
-            if (up) { IOHIDEventSystemClientRef c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); }
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔴 IOKit (%.0f,%.0f) ✅\n", x, y]];
-            showTapIndicator(x, y);
-        });
-        return;
-    }
-    
-    // UITouch
-    @try {
-        UITouch *touch = [[UITouch alloc] init];
-        [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
-        [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
-        [touch setValue:hitView forKey:@"view"];
-        [touch setValue:targetWindow forKey:@"window"];
-        [touch setValue:@(1) forKey:@"tapCount"];
-        NSSet *touches = [NSSet setWithObject:touch];
-        UIEvent *event = [[UIEvent alloc] init];
-        [event setValue:touches forKey:@"_touches"];
-        [event setValue:@(UIEventTypeTouches) forKey:@"type"];
-        [event setValue:@(UIEventSubtypeNone) forKey:@"subtype"];
-        [event setValue:@(mach_absolute_time()) forKey:@"_timestamp"];
-        [hitView touchesBegan:touches withEvent:event];
-        [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
-        [hitView touchesEnded:touches withEvent:event];
-    } @catch (NSException *e) {
-        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UITouch 异常: %@\n", e.reason]];
-    }
-    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔵 UITouch (%.0f,%.0f) ✅\n", x, y]];
-    showTapIndicator(x, y);
+    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) 无控件/手势\n", x, y]];
 }
 
 static void executeTapSequence(NSArray *configs, NSUInteger index) {
@@ -221,24 +249,21 @@ static void executeTapSequence(NSArray *configs, NSUInteger index) {
 @end
 
 @implementation TapControllerPanel
-+ (instancetype)shared { static TapControllerPanel *i=nil; static dispatch_once_t t; dispatch_once(&t,^{i=[[TapControllerPanel alloc]initWithFrame:CGRectMake(5,180,[UIScreen mainScreen].bounds.size.width-10,340)];}); return i; }
++ (instancetype)shared { static TapControllerPanel *i=nil; static dispatch_once_t t; dispatch_once(&t,^{i=[[TapControllerPanel alloc]initWithFrame:CGRectMake(5,180,[UIScreen mainScreen].bounds.size.width-10,300)];}); return i; }
 - (instancetype)initWithFrame:(CGRect)frame { self=[super initWithFrame:frame]; if(self){
     self.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.90];self.layer.cornerRadius=10;self.layer.borderWidth=1.5;self.layer.borderColor=[UIColor systemGreenColor].CGColor;self.userInteractionEnabled=YES;self.clipsToBounds=NO;self.hidden=YES;
-    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🖐 模拟点击器";t.textColor=[UIColor systemGreenColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=2001;[self addSubview:t];
+    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🖐 真实触摸模拟器";t.textColor=[UIColor systemGreenColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=2001;[self addSubview:t];
     UILabel *l1=[[UILabel alloc]initWithFrame:CGRectMake(12,34,80,20)];l1.text=@"点击序列:";l1.textColor=[UIColor whiteColor];l1.font=[UIFont systemFontOfSize:11];[self addSubview:l1];
     _configField=[[UITextField alloc]initWithFrame:CGRectMake(95,32,self.bounds.size.width-110,26)];_configField.borderStyle=UITextBorderStyleRoundedRect;_configField.backgroundColor=[UIColor darkGrayColor];_configField.textColor=[UIColor whiteColor];_configField.font=[UIFont systemFontOfSize:12];_configField.placeholder=@"x:y:秒|x2:y2:秒|...";_configField.tag=2011;_configField.delegate=self;[self addSubview:_configField];
-    UILabel *swLabel=[[UILabel alloc]initWithFrame:CGRectMake(12,64,100,20)];swLabel.text=@"强制UIKit:";swLabel.textColor=[UIColor whiteColor];swLabel.font=[UIFont systemFontOfSize:10];[self addSubview:swLabel];
-    _forceUIKitSwitch=[[UISwitch alloc]initWithFrame:CGRectMake(100,60,50,28)];_forceUIKitSwitch.on=s_forceUIKit;_forceUIKitSwitch.tag=2019;[_forceUIKitSwitch addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];[self addSubview:_forceUIKitSwitch];
-    UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(12,90,80,26);[p1 setTitle:@"预设:左上角" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:10];p1.tag=2016;[p1 addTarget:self action:@selector(preset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
-    UIButton *p2=[UIButton buttonWithType:UIButtonTypeSystem];p2.frame=CGRectMake(100,90,80,26);[p2 setTitle:@"预设:右下角" forState:UIControlStateNormal];[p2 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p2.titleLabel.font=[UIFont systemFontOfSize:10];p2.tag=2017;[p2 addTarget:self action:@selector(preset2) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p2];
-    UIButton *p3=[UIButton buttonWithType:UIButtonTypeSystem];p3.frame=CGRectMake(188,90,80,26);[p3 setTitle:@"预设:屏幕中心" forState:UIControlStateNormal];[p3 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p3.titleLabel.font=[UIFont systemFontOfSize:10];p3.tag=2018;[p3 addTarget:self action:@selector(preset3) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p3];
-    UIButton *execBtn=[UIButton buttonWithType:UIButtonTypeSystem];execBtn.frame=CGRectMake(12,124,100,36);[execBtn setTitle:@"⚡立即执行" forState:UIControlStateNormal];[execBtn setTitleColor:[UIColor systemGreenColor] forState:UIControlStateNormal];execBtn.titleLabel.font=[UIFont boldSystemFontOfSize:14];execBtn.tag=2014;[execBtn addTarget:self action:@selector(executeTaps) forControlEvents:UIControlEventTouchUpInside];[self addSubview:execBtn];
+    UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(12,66,80,26);[p1 setTitle:@"预设:左上角" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:10];p1.tag=2016;[p1 addTarget:self action:@selector(preset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
+    UIButton *p2=[UIButton buttonWithType:UIButtonTypeSystem];p2.frame=CGRectMake(100,66,80,26);[p2 setTitle:@"预设:右下角" forState:UIControlStateNormal];[p2 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p2.titleLabel.font=[UIFont systemFontOfSize:10];p2.tag=2017;[p2 addTarget:self action:@selector(preset2) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p2];
+    UIButton *p3=[UIButton buttonWithType:UIButtonTypeSystem];p3.frame=CGRectMake(188,66,80,26);[p3 setTitle:@"预设:屏幕中心" forState:UIControlStateNormal];[p3 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p3.titleLabel.font=[UIFont systemFontOfSize:10];p3.tag=2018;[p3 addTarget:self action:@selector(preset3) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p3];
+    UIButton *execBtn=[UIButton buttonWithType:UIButtonTypeSystem];execBtn.frame=CGRectMake(12,100,100,36);[execBtn setTitle:@"⚡立即执行" forState:UIControlStateNormal];[execBtn setTitleColor:[UIColor systemGreenColor] forState:UIControlStateNormal];execBtn.titleLabel.font=[UIFont boldSystemFontOfSize:14];execBtn.tag=2014;[execBtn addTarget:self action:@selector(executeTaps) forControlEvents:UIControlEventTouchUpInside];[self addSubview:execBtn];
     UIButton *closeBtn=[UIButton buttonWithType:UIButtonTypeSystem];closeBtn.frame=CGRectMake(self.bounds.size.width-45,3,40,30);[closeBtn setTitle:@"✕" forState:UIControlStateNormal];[closeBtn setTitleColor:[UIColor redColor] forState:UIControlStateNormal];closeBtn.titleLabel.font=[UIFont boldSystemFontOfSize:20];closeBtn.tag=2002;[closeBtn addTarget:self action:@selector(hidePanel) forControlEvents:UIControlEventTouchUpInside];[self addSubview:closeBtn];
     UIButton *clearLogBtn=[UIButton buttonWithType:UIButtonTypeSystem];clearLogBtn.frame=CGRectMake(self.bounds.size.width-180,3,40,30);[clearLogBtn setTitle:@"清屏" forState:UIControlStateNormal];[clearLogBtn setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];clearLogBtn.titleLabel.font=[UIFont systemFontOfSize:11];clearLogBtn.tag=2031;[clearLogBtn addTarget:self action:@selector(clearLog) forControlEvents:UIControlEventTouchUpInside];[self addSubview:clearLogBtn];
     UIView *handle=[[UIView alloc]initWithFrame:CGRectMake(self.bounds.size.width/2-15,4,30,4)];handle.backgroundColor=[UIColor colorWithWhite:0.4 alpha:0.6];handle.layer.cornerRadius=2;handle.tag=2004;[self addSubview:handle];UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(handlePan:)];[self addGestureRecognizer:pan];
-    CGFloat tvY=168;_logTextView=[[UITextView alloc]initWithFrame:CGRectMake(5,tvY,self.bounds.size.width-10,self.bounds.size.height-tvY-5)];_logTextView.backgroundColor=[UIColor clearColor];_logTextView.textColor=[UIColor greenColor];_logTextView.font=[UIFont fontWithName:@"Courier" size:10]?:[UIFont systemFontOfSize:10];_logTextView.editable=NO;_logTextView.selectable=YES;_logTextView.tag=2005;_logTextView.textContainerInset=UIEdgeInsetsMake(2,2,2,2);[self addSubview:_logTextView];_logBuffer=[NSMutableString string];
+    CGFloat tvY=144;_logTextView=[[UITextView alloc]initWithFrame:CGRectMake(5,tvY,self.bounds.size.width-10,self.bounds.size.height-tvY-5)];_logTextView.backgroundColor=[UIColor clearColor];_logTextView.textColor=[UIColor greenColor];_logTextView.font=[UIFont fontWithName:@"Courier" size:10]?:[UIFont systemFontOfSize:10];_logTextView.editable=NO;_logTextView.selectable=YES;_logTextView.tag=2005;_logTextView.textContainerInset=UIEdgeInsetsMake(2,2,2,2);[self addSubview:_logTextView];_logBuffer=[NSMutableString string];
 }return self;}
-- (void)switchChanged:(UISwitch *)s { s_forceUIKit = s.on; [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"强制UIKit: %@\n", s.on ? @"ON" : @"OFF"]]; }
 - (void)handlePan:(UIPanGestureRecognizer*)p{CGPoint t=[p translationInView:self];self.center=CGPointMake(self.center.x+t.x,self.center.y+t.y);[p setTranslation:CGPointZero inView:self];}
 - (BOOL)textFieldShouldReturn:(UITextField*)tf{[tf resignFirstResponder];return YES;}
 - (void)hidePanel{self.hidden=YES;}
@@ -246,8 +271,8 @@ static void executeTapSequence(NSArray *configs, NSUInteger index) {
 - (void)preset1{self.configField.text=@"50:100:0";[self showLog:@"📌 预设: 左上角\n"];}
 - (void)preset2{CGFloat w=[UIScreen mainScreen].bounds.size.width; CGFloat h=[UIScreen mainScreen].bounds.size.height; self.configField.text=[NSString stringWithFormat:@"%.0f:%.0f:0",w-30,h-50];[self showLog:@"📌 预设: 右下角\n"];}
 - (void)preset3{CGFloat w=[UIScreen mainScreen].bounds.size.width; CGFloat h=[UIScreen mainScreen].bounds.size.height; self.configField.text=[NSString stringWithFormat:@"%.0f:%.0f:0",w/2,h/2];[self showLog:@"📌 预设: 屏幕中心\n"];}
-- (void)executeTaps{[self.configField resignFirstResponder];NSString *raw=self.configField.text;if(!raw.length){showToast(@"⚠️ 请填写点击序列");return;} s_tapConfigs=[raw componentsSeparatedByString:@"|"]; if(s_tapConfigs.count==0){showToast(@"⚠️ 格式: x:y:秒|x2:y2:秒");return;} s_isExecuting=YES; [self showLog:[NSString stringWithFormat:@"\n🖐 开始 %lu 步 (强制UIKit:%@)\n",(unsigned long)s_tapConfigs.count,s_forceUIKit?@"ON":@"OFF"]]; showToast([NSString stringWithFormat:@"🖐 开始 %lu 步",(unsigned long)s_tapConfigs.count]); executeTapSequence(s_tapConfigs,0);}
-- (void)forceShow{if(!s_tapWindow){UIWindowScene *as=nil;for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);s_tapWindow.panel=self;s_tapWindow.hidden=NO;}}else{if(!self.superview){[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);s_tapWindow.panel=self;}s_tapWindow.hidden=NO;s_tapWindow.alpha=1.0;[s_tapWindow bringSubviewToFront:self];}self.hidden=NO;self.alpha=1.0;showToast(@"👆 面板已呼出");}
+- (void)executeTaps{[self.configField resignFirstResponder];NSString *raw=self.configField.text;if(!raw.length){showToast(@"⚠️ 请填写点击序列");return;} s_tapConfigs=[raw componentsSeparatedByString:@"|"]; if(s_tapConfigs.count==0){showToast(@"⚠️ 格式: x:y:秒|x2:y2:秒");return;} s_isExecuting=YES; [self showLog:[NSString stringWithFormat:@"\n🖐 开始 %lu 步\n",(unsigned long)s_tapConfigs.count]]; showToast([NSString stringWithFormat:@"🖐 开始 %lu 步",(unsigned long)s_tapConfigs.count]); executeTapSequence(s_tapConfigs,0);}
+- (void)forceShow{if(!s_tapWindow){UIWindowScene *as=nil;for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,300);s_tapWindow.panel=self;s_tapWindow.hidden=NO;}}else{if(!self.superview){[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,300);s_tapWindow.panel=self;}s_tapWindow.hidden=NO;s_tapWindow.alpha=1.0;[s_tapWindow bringSubviewToFront:self];}self.hidden=NO;self.alpha=1.0;showToast(@"👆 面板已呼出");}
 - (void)showLog:(NSString*)log{dispatch_async(dispatch_get_main_queue(),^{[self.logBuffer appendString:log];if(self.logBuffer.length>5000)[self.logBuffer deleteCharactersInRange:NSMakeRange(0,self.logBuffer.length-5000)];self.logTextView.text=self.logBuffer;if(self.logTextView.text.length>0)[self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length-1,1)];});}
 @end
 
@@ -285,17 +310,11 @@ static const NSTimeInterval kTwoFingerHoldDuration=0.5;
 
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        loadIOKitIfNeeded();
+        loadSyntheticTouch();
         UIWindowScene *as=nil;
         for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}
-        if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;TapControllerPanel *p=[TapControllerPanel shared];p.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_tapWindow addSubview:p];s_tapWindow.panel=p;s_tapWindow.hidden=NO;}
-        if(s_iokitAvailable){
-            [[TapControllerPanel shared]showLog:@"🔴 IOKit 已加载 (强制UIKit:ON)\n"];
-            showToast(@"🟡 强制UIKit模式");
-        }else{
-            [[TapControllerPanel shared]showLog:@"🟡 UIKit 模式\n"];
-            showToast(@"🟡 UIKit 模式");
-        }
+        if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;TapControllerPanel *p=[TapControllerPanel shared];p.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,300);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_tapWindow addSubview:p];s_tapWindow.panel=p;s_tapWindow.hidden=NO;}
+        if(s_syntheticTouchAvailable){showToast(@"🟣 真实触摸模式");}else{showToast(@"🟡 UIKit 降级模式");}
     });
 }
 #pragma clang diagnostic pop
