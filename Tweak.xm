@@ -53,12 +53,9 @@ static TestWindow *s_window = nil;
         Class AXUIElement = NSClassFromString(@"AXUIElement");
         [log appendFormat:@"AXUIElement类: %@\n", AXUIElement ? @"✅" : @"❌"];
         if (AXUIElement) {
-            @try {
-                id elem = [AXUIElement performSelector:NSSelectorFromString(@"elementWithAXUIElementRef:") withObject:nil];
-                [log appendFormat:@"调用结果: %@\n", elem ? @"✅" : @"❌"];
-            } @catch (NSException *e) {
-                [log appendFormat:@"❌ %@\n", e.reason];
-            }
+            SEL sel = NSSelectorFromString(@"elementWithAXUIElementRef:");
+            id elem = ((id (*)(id, SEL, void *))objc_msgSend)(AXUIElement, sel, nil);
+            [log appendFormat:@"调用结果: %@\n", elem ? @"✅" : @"❌"];
         }
         
         // 显示
