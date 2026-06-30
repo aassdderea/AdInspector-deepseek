@@ -9,6 +9,16 @@ static void logMsg(NSString *m) {
     [s_log appendFormat:@"%@\n", m];
 }
 
+@interface LogWindow : UIWindow
+@end
+@implementation LogWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self) return nil;
+    return hit;
+}
+@end
+
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e {
     %orig;
@@ -40,11 +50,10 @@ static void logMsg(NSString *m) {
         label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
         label.font = [UIFont systemFontOfSize:11];
         label.numberOfLines = 0;
-        UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        LogWindow *w = [[LogWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         w.windowLevel = CGFLOAT_MAX;
         w.backgroundColor = [UIColor clearColor];
         w.hidden = NO;
-        w.userInteractionEnabled = NO;
         [w addSubview:label];
         [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { label.text = s_log; }];
     });
