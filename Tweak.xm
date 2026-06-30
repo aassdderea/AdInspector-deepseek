@@ -129,8 +129,11 @@ static void simulateTap(CGFloat x, CGFloat y) {
     for (int i = 0; i < 5 && check && check != targetWindow; i++) {
         if ([check isKindOfClass:[UIControl class]]) {
             UIControl *ctrl = (UIControl *)check;
-            [ctrl sendActionsForControlEvents:UIControlEventTouchDown];
-            [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+            @try {
+                [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+            } @catch (NSException *e) {
+                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UIControl 异常: %@\n", e.reason]];
+            }
             [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) → %@ ✅\n", x, y, NSStringFromClass([check class])]];
             showTapIndicator(x, y);
             return;
@@ -143,10 +146,14 @@ static void simulateTap(CGFloat x, CGFloat y) {
     for (int i = 0; i < 5 && gv && gv != targetWindow; i++) {
         for (UIGestureRecognizer *gr in gv.gestureRecognizers) {
             if (gr.enabled) {
-                [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
-                });
+                @try {
+                    [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                    });
+                } @catch (NSException *e) {
+                    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ 手势异常: %@\n", e.reason]];
+                }
                 [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) → %@ ✅\n", x, y, NSStringFromClass([gv class])]];
                 showTapIndicator(x, y);
                 return;
@@ -155,7 +162,7 @@ static void simulateTap(CGFloat x, CGFloat y) {
         gv = gv.superview;
     }
     
-    // IOKit（如果不强制 UIKit）
+    // IOKit
     if (s_iokitAvailable && !s_forceUIKit) {
         CGFloat scale = [UIScreen mainScreen].scale;
         double px = x * scale, py = y * scale;
@@ -173,21 +180,25 @@ static void simulateTap(CGFloat x, CGFloat y) {
     }
     
     // UITouch
-    UITouch *touch = [[UITouch alloc] init];
-    [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
-    [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
-    [touch setValue:hitView forKey:@"view"];
-    [touch setValue:targetWindow forKey:@"window"];
-    [touch setValue:@(1) forKey:@"tapCount"];
-    NSSet *touches = [NSSet setWithObject:touch];
-    UIEvent *event = [[UIEvent alloc] init];
-    [event setValue:touches forKey:@"_touches"];
-    [event setValue:@(UIEventTypeTouches) forKey:@"type"];
-    [event setValue:@(UIEventSubtypeNone) forKey:@"subtype"];
-    [event setValue:@(mach_absolute_time()) forKey:@"_timestamp"];
-    [hitView touchesBegan:touches withEvent:event];
-    [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
-    [hitView touchesEnded:touches withEvent:event];
+    @try {
+        UITouch *touch = [[UITouch alloc] init];
+        [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
+        [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
+        [touch setValue:hitView forKey:@"view"];
+        [touch setValue:targetWindow forKey:@"window"];
+        [touch setValue:@(1) forKey:@"tapCount"];
+        NSSet *touches = [NSSet setWithObject:touch];
+        UIEvent *event = [[UIEvent alloc] init];
+        [event setValue:touches forKey:@"_touches"];
+        [event setValue:@(UIEventTypeTouches) forKey:@"type"];
+        [event setValue:@(UIEventSubtypeNone) forKey:@"subtype"];
+        [event setValue:@(mach_absolute_time()) forKey:@"_timestamp"];
+        [hitView touchesBegan:touches withEvent:event];
+        [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
+        [hitView touchesEnded:touches withEvent:event];
+    } @catch (NSException *e) {
+        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UITouch 异常: %@\n", e.reason]];
+    }
     [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔵 UITouch (%.0f,%.0f) ✅\n", x, y]];
     showTapIndicator(x, y);
 }
@@ -233,7 +244,7 @@ static void executeTapSequence(NSArray *configs, NSUInteger index) {
 - (void)hidePanel{self.hidden=YES;}
 - (void)clearLog{[self.logBuffer setString:@""];self.logTextView.text=@"";showToast(@"🗑️ 日志已清屏");}
 - (void)preset1{self.configField.text=@"50:100:0";[self showLog:@"📌 预设: 左上角\n"];}
-- (void)preset2{CGFloat w=[UIScreen mainScreen].bounds.size.width; CGFloat h=[UIScreen mainScreen].bounds.size.height; self.configField.text=[NSString stringWithFormat:@"%.0f:%.0f:0",w-50,h-100];[self showLog:@"📌 预设: 右下角\n"];}
+- (void)preset2{CGFloat w=[UIScreen mainScreen].bounds.size.width; CGFloat h=[UIScreen mainScreen].bounds.size.height; self.configField.text=[NSString stringWithFormat:@"%.0f:%.0f:0",w-30,h-50];[self showLog:@"📌 预设: 右下角\n"];}
 - (void)preset3{CGFloat w=[UIScreen mainScreen].bounds.size.width; CGFloat h=[UIScreen mainScreen].bounds.size.height; self.configField.text=[NSString stringWithFormat:@"%.0f:%.0f:0",w/2,h/2];[self showLog:@"📌 预设: 屏幕中心\n"];}
 - (void)executeTaps{[self.configField resignFirstResponder];NSString *raw=self.configField.text;if(!raw.length){showToast(@"⚠️ 请填写点击序列");return;} s_tapConfigs=[raw componentsSeparatedByString:@"|"]; if(s_tapConfigs.count==0){showToast(@"⚠️ 格式: x:y:秒|x2:y2:秒");return;} s_isExecuting=YES; [self showLog:[NSString stringWithFormat:@"\n🖐 开始 %lu 步 (强制UIKit:%@)\n",(unsigned long)s_tapConfigs.count,s_forceUIKit?@"ON":@"OFF"]]; showToast([NSString stringWithFormat:@"🖐 开始 %lu 步",(unsigned long)s_tapConfigs.count]); executeTapSequence(s_tapConfigs,0);}
 - (void)forceShow{if(!s_tapWindow){UIWindowScene *as=nil;for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);s_tapWindow.panel=self;s_tapWindow.hidden=NO;}}else{if(!self.superview){[s_tapWindow addSubview:self];self.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);s_tapWindow.panel=self;}s_tapWindow.hidden=NO;s_tapWindow.alpha=1.0;[s_tapWindow bringSubviewToFront:self];}self.hidden=NO;self.alpha=1.0;showToast(@"👆 面板已呼出");}
