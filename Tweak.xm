@@ -246,7 +246,7 @@ static void applyCustomRules(void) {
             for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
             if(skipLabel){
                 UIWindow *adWindow=skipLabel.window;
-                if(adWindow&&![adWindow isKindOfClass:[AdInspectorWindow class]]&&adWindow!=s_floatWindow){
+                                if(adWindow&&![adWindow isKindOfClass:[AdInspectorWindow class]]&&adWindow!=s_floatWindow&&![NSStringFromClass([adWindow class]) hasPrefix:@"FLEX"]){
                     adWindow.hidden=YES;
                     [adWindow resignKeyWindow];
                     [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已隐藏广告窗口: %@\n",NSStringFromClass([adWindow class])]];
