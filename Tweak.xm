@@ -245,28 +245,35 @@ static void applyCustomRules(void) {
             UIView *skipLabel=nil;
             for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
             if(skipLabel){
-                // 向上查找广告容器
-                UIView *adContainer=nil;
-                UIView *cur=skipLabel;
-                while(cur.superview&&![cur.superview isKindOfClass:[UIWindow class]]){
-                    cur=cur.superview;
-                    NSString *cn=NSStringFromClass([cur class]);
-                    CGSize sz=cur.bounds.size;
-                    CGSize ss=[UIScreen mainScreen].bounds.size;
-                    if([cn containsString:@"Splash"]||[cn containsString:@"Ad"]||(sz.width>=ss.width*0.9&&sz.height>=ss.height*0.9)){
-                        adContainer=cur;
-                    }
-                }
-                if(adContainer){
-                    [adContainer removeFromSuperview];
-                    [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告容器: %@\n",NSStringFromClass([adContainer class])]];
+                UIWindow *adWindow=skipLabel.window;
+                if(adWindow&&![adWindow isKindOfClass:[AdInspectorWindow class]]&&adWindow!=s_floatWindow){
+                    adWindow.hidden=YES;
+                    [adWindow resignKeyWindow];
+                    [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已隐藏广告窗口: %@\n",NSStringFromClass([adWindow class])]];
+                    showToast(@"✅ 广告窗口已隐藏");
                 }else{
-                    UIView *target=skipLabel;
-                    while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
-                    [target removeFromSuperview];
-                    [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除视图: %@\n",NSStringFromClass([target class])]];
+                    UIView *adContainer=nil;
+                    UIView *cur=skipLabel;
+                    while(cur.superview&&![cur.superview isKindOfClass:[UIWindow class]]){
+                        cur=cur.superview;
+                        NSString *cn=NSStringFromClass([cur class]);
+                        CGSize sz=cur.bounds.size;
+                        CGSize ss=[UIScreen mainScreen].bounds.size;
+                        if([cn containsString:@"Splash"]||[cn containsString:@"Ad"]||(sz.width>=ss.width*0.9&&sz.height>=ss.height*0.9)){
+                            adContainer=cur;
+                        }
+                    }
+                    if(adContainer){
+                        [adContainer removeFromSuperview];
+                        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告容器: %@\n",NSStringFromClass([adContainer class])]];
+                    }else{
+                        UIView *target=skipLabel;
+                        while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
+                        [target removeFromSuperview];
+                        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除视图: %@\n",NSStringFromClass([target class])]];
+                    }
+                    showToast(@"✅ 广告已移除");
                 }
-                showToast(@"✅ 广告已移除");
             }else{
                 BOOL webDone=NO;
                 for(UIWindow *w in getAllWindows()){WKWebView *webView=(WKWebView*)findViewOfClass(w,@"WKWebView"); if(webView){[webView evaluateJavaScript:@"(function(){var btns=document.querySelectorAll('button,span,div,a');for(var i=0;i<btns.length;i++){var t=btns[i].innerText||btns[i].textContent;if(t&&(t.indexOf('跳过')>=0||t.indexOf('Skip')>=0||t.indexOf('关闭')>=0||t.indexOf('×')>=0)){btns[i].click();return'clicked';}}return'not found';})()" completionHandler:^(id result,NSError *err){if([result isEqualToString:@"clicked"]){[[AdInspectorPanel shared]showLog:@"\n✅ 网页跳过按钮已点击\n"];showToast(@"✅ 网页广告已跳过");}}]; webDone=YES;break;}}
