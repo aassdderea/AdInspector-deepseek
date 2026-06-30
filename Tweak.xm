@@ -50,7 +50,7 @@ static TestWindow *s_window = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         static kern_return_t (*bootstrap_look_up_ptr)(mach_port_t, const char *, mach_port_t *) = NULL;
-        bootstrap_look_up_ptr = dlsym(RTLD_DEFAULT, "bootstrap_look_up");
+        bootstrap_look_up_ptr = (kern_return_t (*)(mach_port_t, const char *, mach_port_t *))dlsym(RTLD_DEFAULT, "bootstrap_look_up");
         if (!bootstrap_look_up_ptr) {
             logMsg(@"❌ bootstrap_look_up 未找到");
             return;
