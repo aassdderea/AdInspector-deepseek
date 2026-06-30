@@ -21,9 +21,9 @@ static void loadIOKitIfNeeded(void) {
     tried = YES;
     void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
     if (!handle) return;
-    IOHIDEventCreateDigitizerFingerEventPtr = dlsym(handle, "IOHIDEventCreateDigitizerFingerEvent");
-    IOHIDEventSystemClientCreatePtr = dlsym(handle, "IOHIDEventSystemClientCreate");
-    IOHIDEventSystemClientDispatchEventPtr = dlsym(handle, "IOHIDEventSystemClientDispatchEvent");
+    IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(handle, "IOHIDEventCreateDigitizerFingerEvent");
+    IOHIDEventSystemClientCreatePtr = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(handle, "IOHIDEventSystemClientCreate");
+    IOHIDEventSystemClientDispatchEventPtr = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(handle, "IOHIDEventSystemClientDispatchEvent");
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         s_iokitAvailable = YES;
     }
