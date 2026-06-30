@@ -5,7 +5,7 @@
 #import <objc/message.h>
 #import <mach/mach_time.h>
 #import <mach/mach.h>
-extern kern_return_t bootstrap_look_up(mach_port_t bp, const char *service_name, mach_port_t *sp);
+extern "C" kern_return_t bootstrap_look_up(mach_port_t bp, const char *service_name, mach_port_t *sp);
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 
