@@ -103,15 +103,10 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     }
     return all;
 }
-static BOOL isFlexingAvailable(void) {
-    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) return YES; }
-    return NO;
-}
+static BOOL isFlexingAvailable(void) { for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) return YES; } return NO; }
 static void raiseFlexingWindow(void) {
     if (s_isKeyboardVisible) return;
-    for (UIWindow *w in getAllWindows()) {
-        if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; }
-    }
+    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; } }
 }
 static void startTracking(void) { s_trackedMethods=[NSMutableArray array]; s_isTracking=YES; s_trackStartTime=[NSDate date]; }
 static void stopTracking(void) { s_isTracking=NO; }
@@ -185,83 +180,26 @@ static void startDeepTracking(void) {
     }
     [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🔬 深度追踪 %d 个非系统类\n", count]];
 }
-
 static NSArray *stopDeepTracking(void) { s_isDeepTracking=NO; NSArray *r=[s_deepTrackedMethods copy]; s_deepTrackedMethods=nil; s_deepTrackStartTime=nil; return r; }
-static NSString *getControlEventName(UIControlEvents e) {
-    switch(e){case UIControlEventTouchDown:return @"TouchDown"; case UIControlEventTouchUpInside:return @"TouchUpInside"; default:return [NSString stringWithFormat:@"Evt%lu",(unsigned long)e];}
-}
+static NSString *getControlEventName(UIControlEvents e) { switch(e){case UIControlEventTouchDown:return @"TouchDown"; case UIControlEventTouchUpInside:return @"TouchUpInside"; default:return [NSString stringWithFormat:@"Evt%lu",(unsigned long)e];} }
 static void saveToFile(NSString *log) {
-    @try{
-        NSArray *p=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES);
-        if(!p.count)return;
-        NSString *pt=[p[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"];
-        NSFileHandle *f=[NSFileHandle fileHandleForWritingAtPath:pt];
-        if(!f){[[NSData data] writeToFile:pt atomically:YES]; f=[NSFileHandle fileHandleForWritingAtPath:pt];}
-        if(f){[f seekToEndOfFile];[f writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];[f closeFile];}
-    }@catch(NSException *e){}
+    @try{NSArray *p=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES); if(!p.count)return; NSString *pt=[p[0] stringByAppendingPathComponent:@"AdInspector_Logs.txt"]; NSFileHandle *f=[NSFileHandle fileHandleForWritingAtPath:pt]; if(!f){[[NSData data] writeToFile:pt atomically:YES]; f=[NSFileHandle fileHandleForWritingAtPath:pt];} if(f){[f seekToEndOfFile];[f writeData:[log dataUsingEncoding:NSUTF8StringEncoding]];[f closeFile];}}@catch(NSException *e){}
 }
 static void highlightView(UIView *v) {
-    if(!v)return; UIColor *oc=nil; CGColorRef og=v.layer.borderColor; if(og)oc=[UIColor colorWithCGColor:og];
-    CGFloat ow=v.layer.borderWidth; v.layer.borderColor=[UIColor redColor].CGColor; v.layer.borderWidth=3.0;
-    __weak UIView *wv=v;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        __strong UIView *sv=wv; if(sv){sv.layer.borderColor=oc?oc.CGColor:NULL; sv.layer.borderWidth=ow;}
-    });
+    if(!v)return; UIColor *oc=nil; CGColorRef og=v.layer.borderColor; if(og)oc=[UIColor colorWithCGColor:og]; CGFloat ow=v.layer.borderWidth; v.layer.borderColor=[UIColor redColor].CGColor; v.layer.borderWidth=3.0;
+    __weak UIView *wv=v; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ __strong UIView *sv=wv; if(sv){sv.layer.borderColor=oc?oc.CGColor:NULL; sv.layer.borderWidth=ow;} });
 }
-static void saveRule(NSDictionary *r) {
-    NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *ex=[ud arrayForKey:kRulesKey]?:@[];
-    NSInteger ei=-1;
-    for(NSInteger i=0;i<ex.count;i++){NSDictionary *x=ex[i]; if([x[@"buttonClass"]isEqualToString:r[@"buttonClass"]]&&[x[@"buttonTextPattern"]isEqualToString:r[@"buttonTextPattern"]]&&[x[@"hierarchyChain"]isEqualToArray:r[@"hierarchyChain"]]){ei=i;break;}}
-    NSMutableArray *nr=[ex mutableCopy];
-    if(ei>=0){[nr replaceObjectAtIndex:ei withObject:r]; showToast(@"🔄 规则已更新");}
-    else{[nr addObject:r]; showToast([NSString stringWithFormat:@"✅ 已学习：%@",r[@"buttonTextPattern"]]);}
-    [ud setObject:nr forKey:kRulesKey];[ud synchronize];
-}
-static UIView *findMatchingView(UIView *rt,NSDictionary *r) {
-    if([rt isKindOfClass:[AdInspectorPanel class]]||[NSStringFromClass([rt.window class])isEqualToString:@"AdInspectorWindow"]||(rt.tag>=1001&&rt.tag<=1030))return nil;
-    NSString *tc=r[@"buttonClass"],*tp=r[@"buttonTextPattern"]; NSArray *ch=r[@"hierarchyChain"];
-    if([NSStringFromClass([rt class])isEqualToString:tc]){
-        NSString *ct=nil;
-        if([rt isKindOfClass:[UIButton class]])ct=[(UIButton*)rt titleForState:UIControlStateNormal];
-        else if([rt isKindOfClass:[UILabel class]])ct=[(UILabel*)rt text]?:[(UILabel*)rt attributedText].string;
-        else ct=rt.accessibilityLabel;
-        if(ct){BOOL tm=(tp.length<=2)?[ct isEqualToString:tp]:([ct rangeOfString:tp].location!=NSNotFound&&ct.length<=15);
-            if(tm){NSMutableArray *cc=[NSMutableArray array]; UIView *cur=rt;
-                while(cur&&![cur isKindOfClass:[UIWindow class]]){[cc addObject:NSStringFromClass([cur class])];cur=cur.superview;}
-                if([cc isEqualToArray:ch])return rt;}}
-    }
-    for(UIView *sb in rt.subviews){UIView *f=findMatchingView(sb,r); if(f)return f;}
-    return nil;
-}
+static void saveRule(NSDictionary *r) { NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *ex=[ud arrayForKey:kRulesKey]?:@[]; NSInteger ei=-1; for(NSInteger i=0;i<ex.count;i++){NSDictionary *x=ex[i]; if([x[@"buttonClass"]isEqualToString:r[@"buttonClass"]]&&[x[@"buttonTextPattern"]isEqualToString:r[@"buttonTextPattern"]]&&[x[@"hierarchyChain"]isEqualToArray:r[@"hierarchyChain"]]){ei=i;break;}} NSMutableArray *nr=[ex mutableCopy]; if(ei>=0){[nr replaceObjectAtIndex:ei withObject:r]; showToast(@"🔄 规则已更新");}else{[nr addObject:r]; showToast([NSString stringWithFormat:@"✅ 已学习：%@",r[@"buttonTextPattern"]]);} [ud setObject:nr forKey:kRulesKey];[ud synchronize]; }
+static UIView *findMatchingView(UIView *rt,NSDictionary *r) { if([rt isKindOfClass:[AdInspectorPanel class]]||[NSStringFromClass([rt.window class])isEqualToString:@"AdInspectorWindow"]||(rt.tag>=1001&&rt.tag<=1030))return nil; NSString *tc=r[@"buttonClass"],*tp=r[@"buttonTextPattern"]; NSArray *ch=r[@"hierarchyChain"]; if([NSStringFromClass([rt class])isEqualToString:tc]){ NSString *ct=nil; if([rt isKindOfClass:[UIButton class]])ct=[(UIButton*)rt titleForState:UIControlStateNormal]; else if([rt isKindOfClass:[UILabel class]])ct=[(UILabel*)rt text]?:[(UILabel*)rt attributedText].string; else ct=rt.accessibilityLabel; if(ct){BOOL tm=(tp.length<=2)?[ct isEqualToString:tp]:([ct rangeOfString:tp].location!=NSNotFound&&ct.length<=15); if(tm){NSMutableArray *cc=[NSMutableArray array]; UIView *cur=rt; while(cur&&![cur isKindOfClass:[UIWindow class]]){[cc addObject:NSStringFromClass([cur class])];cur=cur.superview;} if([cc isEqualToArray:ch])return rt;}} } for(UIView *sb in rt.subviews){UIView *f=findMatchingView(sb,r); if(f)return f;} return nil; }
 static void clearAllRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kRulesKey]; [[NSUserDefaults standardUserDefaults] synchronize]; }
-static void saveCustomRule(NSDictionary *r) {
-    NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *ex=[ud arrayForKey:kCustomRulesKey]?:@[];
-    for(NSDictionary *x in ex) { if([x[@"targetView"]isEqualToString:r[@"targetView"]]&&[x[@"keyPath"]isEqualToString:r[@"keyPath"]]&&[x[@"methodName"]isEqualToString:r[@"methodName"]])return; }
-    NSMutableArray *nr=[ex mutableCopy];[nr addObject:r];[ud setObject:nr forKey:kCustomRulesKey];[ud synchronize];
-}
+static void saveCustomRule(NSDictionary *r) { NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *ex=[ud arrayForKey:kCustomRulesKey]?:@[]; for(NSDictionary *x in ex){if([x[@"targetView"]isEqualToString:r[@"targetView"]]&&[x[@"keyPath"]isEqualToString:r[@"keyPath"]]&&[x[@"methodName"]isEqualToString:r[@"methodName"]])return;} NSMutableArray *nr=[ex mutableCopy];[nr addObject:r];[ud setObject:nr forKey:kCustomRulesKey];[ud synchronize]; }
 static void clearCustomRules(void) { [[NSUserDefaults standardUserDefaults] removeObjectForKey:kCustomRulesKey]; [[NSUserDefaults standardUserDefaults] synchronize]; }
 static id getObjectByKeyPath(id o,NSString *kp) { if([kp isEqualToString:@"self"])return o; NSArray *ks=[kp componentsSeparatedByString:@"."]; id c=o; for(NSString *k in ks){if(!c)return nil; c=[c valueForKey:k];} return c; }
 static UIView *findViewOfClass(UIView *rt,NSString *cn) { if([NSStringFromClass([rt class])isEqualToString:cn])return rt; for(UIView *sb in rt.subviews){UIView *f=findViewOfClass(sb,cn); if(f)return f;} return nil; }
 static BOOL isSkipText(NSString *t) { if(!t||!t.length)return NO; for(NSString *k in @[@"跳过",@"广告",@"关闭",@"×",@"x",@"X",@"close",@"skip",@"Skip",@"Close",@"SKIP",@"CLOSE"]){if([t rangeOfString:k options:NSCaseInsensitiveSearch].location!=NSNotFound&&t.length<=15)return YES;} return NO; }
 static UIView *findSkipLabelInView(UIView *rt) { if([rt isKindOfClass:[AdInspectorPanel class]]||(rt.tag>=1001&&rt.tag<=1030))return nil; NSString *ct=nil; if([rt isKindOfClass:[UIButton class]])ct=[(UIButton*)rt titleForState:UIControlStateNormal]; else if([rt isKindOfClass:[UILabel class]])ct=[(UILabel*)rt text]?:[(UILabel*)rt attributedText].string; if(!ct)ct=rt.accessibilityLabel; if(isSkipText(ct))return rt; for(UIView *sb in rt.subviews){UIView *f=findSkipLabelInView(sb); if(f)return f;} return nil; }
-static void showToast(NSString *m) {
-    dispatch_async(dispatch_get_main_queue(),^{
-        UIWindow *hw=nil;
-        for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){for(UIWindow *w in[(UIWindowScene*)s windows]){if(w.isKeyWindow){hw=w;break;}}}}
-        if(!hw)return;
-        UIView *t=[[UIView alloc]init]; t.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.85]; t.layer.cornerRadius=12;
-        UILabel *l=[[UILabel alloc]init]; l.text=m; l.textColor=[UIColor whiteColor]; l.font=[UIFont boldSystemFontOfSize:14]; l.numberOfLines=0; l.textAlignment=NSTextAlignmentCenter; [t addSubview:l];
-        CGSize ms=CGSizeMake([UIScreen mainScreen].bounds.size.width-60,CGFLOAT_MAX);
-        CGRect tr=[m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:l.font} context:nil];
-        CGFloat w=tr.size.width+30,h=tr.size.height+16; l.frame=CGRectMake(15,8,tr.size.width,tr.size.height);
-        CGPoint c=CGPointMake(hw.bounds.size.width/2,hw.bounds.size.height-150); t.frame=CGRectMake(c.x-w/2,c.y-h/2,w,h); t.layer.zPosition=CGFLOAT_MAX;
-        [hw addSubview:t];[UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{t.alpha=0;} completion:^(BOOL f){[t removeFromSuperview];}];
-    });
-}
-static void triggerSkip(UIView *v,NSDictionary *r) {
-    if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"])return;
-    if([r[@"triggerType"]isEqualToString:@"controlEvent"]&&[v isKindOfClass:[UIControl class]]){[(UIControl*)v sendActionsForControlEvents:[r[@"controlEvent"]unsignedIntegerValue]];showToast(@"⏩ 已自动跳过");}
-}
+static void showToast(NSString *m) { dispatch_async(dispatch_get_main_queue(),^{ UIWindow *hw=nil; for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){for(UIWindow *w in[(UIWindowScene*)s windows]){if(w.isKeyWindow){hw=w;break;}}}} if(!hw)return; UIView *t=[[UIView alloc]init]; t.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.85]; t.layer.cornerRadius=12; UILabel *l=[[UILabel alloc]init]; l.text=m; l.textColor=[UIColor whiteColor]; l.font=[UIFont boldSystemFontOfSize:14]; l.numberOfLines=0; l.textAlignment=NSTextAlignmentCenter; [t addSubview:l]; CGSize ms=CGSizeMake([UIScreen mainScreen].bounds.size.width-60,CGFLOAT_MAX); CGRect tr=[m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:l.font} context:nil]; CGFloat w=tr.size.width+30,h=tr.size.height+16; l.frame=CGRectMake(15,8,tr.size.width,tr.size.height); CGPoint c=CGPointMake(hw.bounds.size.width/2,hw.bounds.size.height-150); t.frame=CGRectMake(c.x-w/2,c.y-h/2,w,h); t.layer.zPosition=CGFLOAT_MAX; [hw addSubview:t];[UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{t.alpha=0;} completion:^(BOOL f){[t removeFromSuperview];}]; }); }
+static void triggerSkip(UIView *v,NSDictionary *r) { if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"])return; if([r[@"triggerType"]isEqualToString:@"controlEvent"]&&[v isKindOfClass:[UIControl class]]){[(UIControl*)v sendActionsForControlEvents:[r[@"controlEvent"]unsignedIntegerValue]];showToast(@"⏩ 已自动跳过");} }
 
 // ==================== 通用自定义规则 ====================
 static void applyCustomRules(void) {
@@ -274,104 +212,40 @@ static void applyCustomRules(void) {
         NSString *cleanMethod=probeMode?[mn substringFromIndex:1]:mn;
         NSString *actualMethod=cleanMethod,*paramStr=nil;
         NSRange crange=[cleanMethod rangeOfString:@"," options:NSBackwardsSearch];
-        if(crange.location!=NSNotFound){
-            // 检查逗号后面是不是数字或布尔值，避免把方法名里的逗号误解析
-            NSString *afterComma=[cleanMethod substringFromIndex:crange.location+1];
-            NSString *trimmed=[afterComma stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            if(trimmed.length>0){
-                actualMethod=[cleanMethod substringToIndex:crange.location];
-                paramStr=trimmed;
-            }
-        }
+        if(crange.location!=NSNotFound){NSString *after=[cleanMethod substringFromIndex:crange.location+1]; if(after.length>0){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=after;}}
 
-        // ===== __SKIP_AD__ 通用跳过（原生+网页）=====
         if([actualMethod isEqualToString:@"__SKIP_AD__"]){
             UIView *skipLabel=nil;
             for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
-            if(skipLabel){
-                UIView *target=skipLabel;
-                while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
-                [target removeFromSuperview];
-                [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除原生广告: %@\n",NSStringFromClass([target class])]];
-                showToast(@"✅ 原生广告已移除");
-            } else {
-                BOOL webDone=NO;
-                for(UIWindow *w in getAllWindows()){
-                    WKWebView *webView=(WKWebView*)findViewOfClass(w,@"WKWebView");
-                    if(webView){
-                        NSString *js=@"(function(){var btns=document.querySelectorAll('button,span,div,a');for(var i=0;i<btns.length;i++){var t=btns[i].innerText||btns[i].textContent;if(t&&(t.indexOf('跳过')>=0||t.indexOf('Skip')>=0||t.indexOf('关闭')>=0||t.indexOf('×')>=0)){btns[i].click();return'clicked';}}return'not found';})()";
-                        [webView evaluateJavaScript:js completionHandler:^(id result,NSError *err){
-                            if([result isEqualToString:@"clicked"]){
-                                [[AdInspectorPanel shared]showLog:@"\n✅ 网页跳过按钮已点击\n"];
-                                showToast(@"✅ 网页广告已跳过");
-                            }
-                        }];
-                        webDone=YES; break;
-                    }
-                }
-                if(!webDone){showToast(@"⚠️ 未找到广告");[[AdInspectorPanel shared]showLog:@"\n⚠️ 未找到广告\n"];}
-            }
+            if(skipLabel){UIView *target=skipLabel; while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview; [target removeFromSuperview]; [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除原生广告: %@\n",NSStringFromClass([target class])]]; showToast(@"✅ 原生广告已移除");}
+            else{BOOL webDone=NO; for(UIWindow *w in getAllWindows()){WKWebView *webView=(WKWebView*)findViewOfClass(w,@"WKWebView"); if(webView){[webView evaluateJavaScript:@"(function(){var btns=document.querySelectorAll('button,span,div,a');for(var i=0;i<btns.length;i++){var t=btns[i].innerText||btns[i].textContent;if(t&&(t.indexOf('跳过')>=0||t.indexOf('Skip')>=0||t.indexOf('关闭')>=0||t.indexOf('×')>=0)){btns[i].click();return'clicked';}}return'not found';})()" completionHandler:^(id result,NSError *err){if([result isEqualToString:@"clicked"]){[[AdInspectorPanel shared]showLog:@"\n✅ 网页跳过按钮已点击\n"];showToast(@"✅ 网页广告已跳过");}}]; webDone=YES;break;}} if(!webDone){showToast(@"⚠️ 未找到广告");[[AdInspectorPanel shared]showLog:@"\n⚠️ 未找到广告\n"];}}
             continue;
         }
 
-        // ===== 查找目标对象 =====
         BOOL found=NO; id tg=nil;
         for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; UIView *tv=findViewOfClass(w,tvc); if(tv){tg=getObjectByKeyPath(tv,kp);if(tg){found=YES;break;}}}
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
         if([kp isEqualToString:@"self"]&&!tg){Class tc=NSClassFromString(tvc);if(tc){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}else if(tg){tg=getObjectByKeyPath(tg,kp);}
         if(!tg){Class tc=NSClassFromString(tvc); if(tc){
-                    if(!tg){Class tc=NSClassFromString(tvc); if(tc){
-            for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; id resp=w; while(resp){if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}resp=[resp nextResponder];} if(tg)break;}
+            for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; NSMutableArray *views=[NSMutableArray arrayWithArray:w.subviews]; while(views.count>0){UIView *v=[views lastObject];[views removeLastObject]; id resp=v.nextResponder; while(resp){if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}resp=[resp nextResponder];} if(tg)break; [views addObjectsFromArray:v.subviews];} if(tg)break;}
             if(!tg){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);}}
         }}
         if(!tg){NSString *msg=[NSString stringWithFormat:@"❌ 未找到 %@",tvc]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         SEL m=NSSelectorFromString(actualMethod);
         if(![tg respondsToSelector:m]){NSString *msg=[NSString stringWithFormat:@"❌ %@ 不响应 %@",NSStringFromClass([tg class]),actualMethod]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
-
-        // ===== 探测模式 =====
-        if(probeMode){
-            NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod];
-            [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac];
-            for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t];
-                if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"];
-                else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}
-            }[log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;
-        }
-
-        // ===== 执行 =====
+        if(probeMode){NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod]; [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac]; for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t]; if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"]; else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}} [log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;}
         NSString *logMsg=nil;
         if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
-        else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2];
-            if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[paramStr integerValue];((void(*)(id,SEL,NSInteger))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSInteger:%ld",NSStringFromClass([tg class]),actualMethod,(long)v]; showToast([NSString stringWithFormat:@"✅ %@(%ld)",actualMethod,(long)v]);}
-            else if(t[0]=='B'||t[0]=='c'){BOOL v=([paramStr intValue]!=0)||[paramStr boolValue];((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ BOOL:%d",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%d)",actualMethod,v]);}
-            else if(t[0]=='d'){double v=[paramStr doubleValue];((void(*)(id,SEL,double))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ double:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);}
-            else if(t[0]=='f'){float v=[paramStr floatValue];((void(*)(id,SEL,float))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ float:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);}
-            else if(t[0]=='@'){NSNumberFormatter *nf=[[NSNumberFormatter alloc]init]; NSNumber *num=[nf numberFromString:paramStr]; if(num){((void(*)(id,SEL,id))objc_msgSend)(tg,m,num); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSNumber:%@",NSStringFromClass([tg class]),actualMethod,num];}else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSString:\"%@\"",NSStringFromClass([tg class]),actualMethod,paramStr];} showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
-            else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 传NSString(未知类型%s)",NSStringFromClass([tg class]),actualMethod,t]; showToast([NSString stringWithFormat:@"⚠️ %@",actualMethod]);}}
+        else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2]; if(t[0]=='q'||t[0]=='Q'||t[0]=='i'||t[0]=='I'||t[0]=='l'||t[0]=='L'){NSInteger v=[paramStr integerValue];((void(*)(id,SEL,NSInteger))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSInteger:%ld",NSStringFromClass([tg class]),actualMethod,(long)v]; showToast([NSString stringWithFormat:@"✅ %@(%ld)",actualMethod,(long)v]);} else if(t[0]=='B'||t[0]=='c'){BOOL v=([paramStr intValue]!=0)||[paramStr boolValue];((void(*)(id,SEL,BOOL))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ BOOL:%d",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%d)",actualMethod,v]);} else if(t[0]=='d'){double v=[paramStr doubleValue];((void(*)(id,SEL,double))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ double:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='f'){float v=[paramStr floatValue];((void(*)(id,SEL,float))objc_msgSend)(tg,m,v); logMsg=[NSString stringWithFormat:@"✅ %@.%@ float:%.1f",NSStringFromClass([tg class]),actualMethod,v]; showToast([NSString stringWithFormat:@"✅ %@(%.1f)",actualMethod,v]);} else if(t[0]=='@'){NSNumberFormatter *nf=[[NSNumberFormatter alloc]init]; NSNumber *num=[nf numberFromString:paramStr]; if(num){((void(*)(id,SEL,id))objc_msgSend)(tg,m,num); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSNumber:%@",NSStringFromClass([tg class]),actualMethod,num];}else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"✅ %@.%@ NSString:\"%@\"",NSStringFromClass([tg class]),actualMethod,paramStr];} showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);} else{((void(*)(id,SEL,id))objc_msgSend)(tg,m,paramStr); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 传NSString(未知类型%s)",NSStringFromClass([tg class]),actualMethod,t]; showToast([NSString stringWithFormat:@"⚠️ %@",actualMethod]);}}
         else if(ac==3&&!paramStr){((void(*)(id,SEL,id))objc_msgSend)(tg,m,nil); logMsg=[NSString stringWithFormat:@"⚠️ %@.%@ 参数:nil 缺参数",NSStringFromClass([tg class]),actualMethod]; showToast(@"⚠️ 缺参数");}
         else{NSInvocation *inv=[NSInvocation invocationWithMethodSignature:sig];[inv setTarget:tg];[inv setSelector:m]; id nilArg=nil; for(NSUInteger i=2;i<ac;i++)[inv setArgument:&nilArg atIndex:i];[inv invoke]; logMsg=[NSString stringWithFormat:@"✅ %@.%@ (%lu参nil)",NSStringFromClass([tg class]),actualMethod,(unsigned long)(ac-2)]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",logMsg]];
     }
 }
 
-static void applyAllSavedRules(void) {
-    NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *cr=[ud arrayForKey:kCustomRulesKey]?:@[],*ar=[ud arrayForKey:kRulesKey]?:@[];
-    if(cr.count>0)applyCustomRules();
-    if(ar.count>0){for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if(![s isKindOfClass:[UIWindowScene class]])continue; for(UIWindow *w in[(UIWindowScene*)s windows]){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; for(NSDictionary *r in ar){UIView *m=findMatchingView(w,r); if(m&&!m.hidden&&m.alpha>0){triggerSkip(m,r);return;}}}}}
-}
-static void analyzeTouchView(UIView *v,CGPoint pt) {
-    if(!v)return; if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"]||(v.tag>=1001&&v.tag<=1030))return;
-    NSDate *n=[NSDate date]; if(s_lastAnalysisTime&&[n timeIntervalSinceDate:s_lastAnalysisTime]<kMinAnalysisInterval)return; s_lastAnalysisTime=n;
-    UIView *av=findSkipLabelInView(v); if(!av){showToast(@"⚠️ 未检测到跳过按钮");return;}
-    @try{UIWindow *aw=av.window; NSString *wc=aw?NSStringFromClass([aw class]):@"未知"; NSMutableString *o=[NSMutableString string];[o appendFormat:@"\n══════ %@ ══════\n",[NSDateFormatter localizedStringFromDate:n dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]];
-        NSMutableArray *ca=[NSMutableArray array];UIView *cur=av; while(cur&&![cur isKindOfClass:[UIWindow class]]){[ca addObject:NSStringFromClass([cur class])];cur=cur.superview;}
-        [o appendString:@"📊 视图层级链:\n"];cur=av;int d=0; while(cur&&d<15){NSString *ind=[@"" stringByPaddingToLength:d*2 withString:@" " startingAtIndex:0];[o appendFormat:@"%@▸ %@ %@\n",ind,NSStringFromClass([cur class]),NSStringFromCGRect(cur.frame)];cur=cur.superview;d++;}
-        [o appendFormat:@"\n🔍 目标:%@ frame:%@\n══════\n",NSStringFromClass([av class]),NSStringFromCGRect(av.frame)];[[AdInspectorPanel shared]showLog:o];saveToFile(o);highlightView(av);
-        NSString *bt=nil; if([av isKindOfClass:[UIButton class]])bt=[(UIButton*)av titleForState:UIControlStateNormal]; else if([av isKindOfClass:[UILabel class]])bt=[(UILabel*)av text]?:[(UILabel*)av attributedText].string; if(!bt.length)bt=av.accessibilityLabel; if(!bt.length){showToast(@"⚠️ 按钮无文字");return;}
-        NSMutableDictionary *r=[NSMutableDictionary dictionary];r[@"buttonClass"]=NSStringFromClass([av class]);r[@"buttonTextPattern"]=bt;r[@"hierarchyChain"]=ca;if(wc)r[@"windowClass"]=wc;saveRule(r);
-    }@catch(NSException *e){showToast(@"⚠️ 分析异常");}
-}
+static void applyAllSavedRules(void) { NSUserDefaults *ud=[NSUserDefaults standardUserDefaults]; NSArray *cr=[ud arrayForKey:kCustomRulesKey]?:@[],*ar=[ud arrayForKey:kRulesKey]?:@[]; if(cr.count>0)applyCustomRules(); if(ar.count>0){for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if(![s isKindOfClass:[UIWindowScene class]])continue; for(UIWindow *w in[(UIWindowScene*)s windows]){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; for(NSDictionary *r in ar){UIView *m=findMatchingView(w,r); if(m&&!m.hidden&&m.alpha>0){triggerSkip(m,r);return;}}}}} }
+static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"]||(v.tag>=1001&&v.tag<=1030))return; NSDate *n=[NSDate date]; if(s_lastAnalysisTime&&[n timeIntervalSinceDate:s_lastAnalysisTime]<kMinAnalysisInterval)return; s_lastAnalysisTime=n; UIView *av=findSkipLabelInView(v); if(!av){showToast(@"⚠️ 未检测到跳过按钮");return;} @try{UIWindow *aw=av.window; NSString *wc=aw?NSStringFromClass([aw class]):@"未知"; NSMutableString *o=[NSMutableString string];[o appendFormat:@"\n══════ %@ ══════\n",[NSDateFormatter localizedStringFromDate:n dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle]]; NSMutableArray *ca=[NSMutableArray array];UIView *cur=av; while(cur&&![cur isKindOfClass:[UIWindow class]]){[ca addObject:NSStringFromClass([cur class])];cur=cur.superview;} [o appendString:@"📊 视图层级链:\n"];cur=av;int d=0; while(cur&&d<15){NSString *ind=[@"" stringByPaddingToLength:d*2 withString:@" " startingAtIndex:0];[o appendFormat:@"%@▸ %@ %@\n",ind,NSStringFromClass([cur class]),NSStringFromCGRect(cur.frame)];cur=cur.superview;d++;} [o appendFormat:@"\n🔍 目标:%@ frame:%@\n══════\n",NSStringFromClass([av class]),NSStringFromCGRect(av.frame)];[[AdInspectorPanel shared]showLog:o];saveToFile(o);highlightView(av); NSString *bt=nil; if([av isKindOfClass:[UIButton class]])bt=[(UIButton*)av titleForState:UIControlStateNormal]; else if([av isKindOfClass:[UILabel class]])bt=[(UILabel*)av text]?:[(UILabel*)av attributedText].string; if(!bt.length)bt=av.accessibilityLabel; if(!bt.length){showToast(@"⚠️ 按钮无文字");return;} NSMutableDictionary *r=[NSMutableDictionary dictionary];r[@"buttonClass"]=NSStringFromClass([av class]);r[@"buttonTextPattern"]=bt;r[@"hierarchyChain"]=ca;if(wc)r[@"windowClass"]=wc;saveRule(r); }@catch(NSException *e){showToast(@"⚠️ 分析异常");} }
 
 // ==================== UI ====================
 @implementation AdInspectorWindow
@@ -430,82 +304,16 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
 
 // ==================== Hook ====================
 %hook UIGestureRecognizer
-- (void)setState:(UIGestureRecognizerState)state {
-    %orig;
-    if (state == UIGestureRecognizerStateEnded) {
-        UIView *view = self.view;
-        if (!view) return;
-        UIView *skipView = findSkipLabelInView(view);
-        if (skipView) {
-            NSMutableString *log = [NSMutableString string];
-            [log appendFormat:@"\n🔔 手势触发! %@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
-            @try { id d = self.delegate; if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])]; } @catch (NSException *e) {}
-            [log appendString:@"══════\n"];
-            [[AdInspectorPanel shared] showLog:log];
-            saveToFile(log);
-        }
-    }
-}
+- (void)setState:(UIGestureRecognizerState)state { %orig; if (state == UIGestureRecognizerStateEnded) { UIView *view = self.view; if (!view) return; UIView *skipView = findSkipLabelInView(view); if (skipView) { NSMutableString *log = [NSMutableString string]; [log appendFormat:@"\n🔔 手势触发! %@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])]; @try { id d = self.delegate; if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])]; } @catch (NSException *e) {} [log appendString:@"══════\n"]; [[AdInspectorPanel shared] showLog:log]; saveToFile(log); } } }
 %end
 
 %hook UIApplication
-- (void)sendEvent:(UIEvent *)e {
-    %orig;
-    if (e.type == UIEventTypeTouches) {
-        NSSet *ts = [e allTouches];
-        if (ts.count >= 2) {
-            BOOL as = YES;
-            for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } }
-            if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
-            if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
-                AdInspectorPanel *p = [AdInspectorPanel shared];
-                if (p.hidden) [p forceShow];
-                s_twoFingerStart = nil;
-                s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
-            }
-        } else { s_twoFingerStart = nil; }
-        if (ts.count == 1) {
-            UITouch *t = [ts anyObject];
-            if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) {
-                if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) {
-                    analyzeTouchView(t.view, [t locationInView:nil]);
-                }
-            }
-        }
-    }
-}
+- (void)sendEvent:(UIEvent *)e { %orig; if (e.type == UIEventTypeTouches) { NSSet *ts = [e allTouches]; if (ts.count >= 2) { BOOL as = YES; for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } } if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date]; if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) { AdInspectorPanel *p = [AdInspectorPanel shared]; if (p.hidden) [p forceShow]; s_twoFingerStart = nil; s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5]; } } else { s_twoFingerStart = nil; } if (ts.count == 1) { UITouch *t = [ts anyObject]; if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) { if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) { analyzeTouchView(t.view, [t locationInView:nil]); } } } } }
 %end
 
 %hook UIControl
-- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e {
-    NSLog(@"[AdInspector] 🔗 %@→%@.%@", NSStringFromClass([self class]), NSStringFromClass([t class]), NSStringFromSelector(a));
-    %orig;
-}
+- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e { NSLog(@"[AdInspector] 🔗 %@→%@.%@", NSStringFromClass([self class]), NSStringFromClass([t class]), NSStringFromSelector(a)); %orig; }
 %end
 
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindowScene *as = nil;
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; }
-        }
-        if (as) {
-            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
-            s_floatWindow.windowScene = as;
-            AdInspectorPanel *p = [AdInspectorPanel shared];
-            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 380);
-            p.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
-            [s_floatWindow addSubview:p];
-            s_floatWindow.panel = p;
-            s_floatWindow.hidden = NO;
-        }
-        showToast(@"🔍 AdInspector 通用版已激活");
-        if (isFlexingAvailable()) raiseFlexingWindow();
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-            applyAllSavedRules();
-            if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO;
-            if (isFlexingAvailable()) raiseFlexingWindow();
-        }];
-    });
-}
+%ctor { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIWindowScene *as = nil; for (UIScene *s in [UIApplication sharedApplication].connectedScenes) { if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; } } if (as) { s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_floatWindow.windowScene = as; AdInspectorPanel *p = [AdInspectorPanel shared]; p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 380); p.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin; [s_floatWindow addSubview:p]; s_floatWindow.panel = p; s_floatWindow.hidden = NO; } showToast(@"🔍 AdInspector 通用版已激活"); if (isFlexingAvailable()) raiseFlexingWindow(); [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { applyAllSavedRules(); if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO; if (isFlexingAvailable()) raiseFlexingWindow(); }]; }); }
 #pragma clang diagnostic pop
