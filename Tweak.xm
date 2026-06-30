@@ -107,6 +107,35 @@ static TestWindow *s_window = nil;
 - (void)doClear { [s_log setString:@""]; }
 @end
 
+%hook UIApplication
+- (void)sendEvent:(UIEvent *)e {
+    if (e.type == UIEventTypeTouches) {
+        NSSet *touches = [e allTouches];
+        UITouch *t = [touches anyObject];
+        if (t.phase == UITouchPhaseEnded) {
+            id gsEvent = [e valueForKey:@"_gsEvent"];
+            if (gsEvent) {
+                NSData *data = [gsEvent valueForKey:@"_eventRecord"];
+                if (!data) data = [gsEvent valueForKey:@"eventRecord"];
+                if (!data) {
+                    void *ptr = (__bridge void *)gsEvent;
+                    data = [NSData dataWithBytes:ptr length:72];
+                }
+                if (data.length >= 72) {
+                    const uint8_t *bytes = data.bytes;
+                    NSMutableString *hex = [NSMutableString string];
+                    for (int i = 0; i < 72; i++) {
+                        [hex appendFormat:@"%02X ", bytes[i]];
+                    }
+                    logMsg([NSString stringWithFormat:@"📐 GSEventRecord 72字节:\n%@", hex]);
+                }
+            }
+        }
+    }
+    %orig;
+}
+%end
+
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
