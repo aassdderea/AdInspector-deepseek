@@ -18,9 +18,9 @@ static BOOL loadIOKitFromDefault(void) {
     static BOOL tried = NO;
     if (tried) return s_iokitAvailable;
     tried = YES;
-    IOHIDEventCreateDigitizerFingerEventPtr = dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
-    IOHIDEventSystemClientCreatePtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-    IOHIDEventSystemClientDispatchEventPtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
+    IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
+    IOHIDEventSystemClientCreatePtr = (void * (*)(CFAllocatorRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
+    IOHIDEventSystemClientDispatchEventPtr = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         s_iokitAvailable = YES;
     }
