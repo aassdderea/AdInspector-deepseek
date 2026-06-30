@@ -44,5 +44,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: RealTouch.dylib
-        path: .theos/obj/debug/RealTouch.dylib
+        name: BSTest.dylib
+        path: .theos/obj/debug/BSTest.dylib
