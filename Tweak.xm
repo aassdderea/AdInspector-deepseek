@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <mach/mach_time.h>
 #import <mach/mach.h>
+#import <servers/bootstrap.h>
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 
@@ -15,11 +16,6 @@ static void logMsg(NSString *m) {
 }
 
 IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEventPtr)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double) = NULL;
-void *(*IOHIDEventSystemClientCreatePtr)(CFAllocatorRef) = NULL;
-void (*IOHIDEventSystemClientDispatchEventPtr)(void *, IOHIDEventRef) = NULL;
-void *GSSendEventPtr = NULL;
-void *GSEventCreateWithEventRecordPtr = NULL;
-void *GSEventSetTypePtr = NULL;
 
 @interface TestWindow : UIWindow
 @property (nonatomic, weak) UIView *panel;
@@ -32,16 +28,13 @@ static TestWindow *s_window = nil;
     if (self) { self.windowLevel = CGFLOAT_MAX; self.backgroundColor = [UIColor clearColor]; self.hidden = NO; }
     return self;
 }
-
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
     if (hit == self) return nil;
     return hit;
 }
-
 - (void)handlePan:(UIPanGestureRecognizer *)p {
-    UIView *v = p.view;
-    CGPoint t = [p translationInView:v];
+    UIView *v = p.view; CGPoint t = [p translationInView:v];
     v.center = CGPointMake(v.center.x + t.x, v.center.y + t.y);
     [p setTranslation:CGPointZero inView:v];
 }
@@ -51,101 +44,58 @@ static TestWindow *s_window = nil;
     UITextField *xf = (UITextField *)[panel viewWithTag:10];
     UITextField *yf = (UITextField *)[panel viewWithTag:11];
     CGFloat x = [xf.text floatValue], y = [yf.text floatValue];
-    CGFloat scale = [UIScreen mainScreen].scale;
-    double px = x * scale, py = y * scale;
     logMsg([NSString stringWithFormat:@"\n🖐 测试坐标 (%.0f, %.0f)", x, y]);
     
-    // IOKit 直接 mach_msg 发送
-    if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr) {
-        @try {
-            void *client = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault);
-            if (client) {
-                int offsets[] = {8, 16, 24, 32, 40, 48, 56, 64};
-                mach_port_t port = 0;
-                int foundOffset = -1;
-                for (int i = 0; i < 8; i++) {
-                    mach_port_t p = *(mach_port_t *)((uint8_t *)client + offsets[i]);
-                    if (p > 0 && p < 0x10000) {
-                        mach_port_type_t ptype;
-                        if (mach_port_type(mach_task_self(), p, &ptype) == KERN_SUCCESS) {
-                            port = p;
-                            foundOffset = offsets[i];
-                            break;
-                        }
-                    }
-                }
-                
-                if (port && foundOffset >= 0) {
-                    logMsg([NSString stringWithFormat:@"🔍 找到HID port: 0x%X 偏移:%d", port, foundOffset]);
-                    
-                    uint64_t ts = mach_absolute_time();
-                    IOHIDEventRef hidDown = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
-                    if (hidDown) {
-                        size_t eventSize = 128;
-                        mach_msg_header_t *msg = (mach_msg_header_t *)calloc(1, sizeof(mach_msg_header_t) + eventSize);
-                        msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-                        msg->msgh_remote_port = port;
-                        msg->msgh_size = sizeof(mach_msg_header_t) + eventSize;
-                        msg->msgh_id = 0;
-                        memcpy((uint8_t *)msg + sizeof(mach_msg_header_t), (uint8_t *)hidDown, eventSize);
-                        
-                        kern_return_t kr = mach_msg_send(msg);
-                        logMsg([NSString stringWithFormat:@"mach_msg_send(down): %s", mach_error_string(kr)]);
-                        free(msg);
-                        CFRelease(hidDown);
-                    }
-                    
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        IOHIDEventRef hidUp = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
-                        if (hidUp) {
-                            size_t eventSize = 128;
-                            mach_msg_header_t *msg = (mach_msg_header_t *)calloc(1, sizeof(mach_msg_header_t) + eventSize);
-                            msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-                            msg->msgh_remote_port = port;
-                            msg->msgh_size = sizeof(mach_msg_header_t) + eventSize;
-                            memcpy((uint8_t *)msg + sizeof(mach_msg_header_t), (uint8_t *)hidUp, eventSize);
-                            mach_msg_send(msg);
-                            free(msg);
-                            CFRelease(hidUp);
-                            logMsg(@"mach_msg up ✅");
-                        }
-                    });
-                } else {
-                    logMsg(@"❌ 未找到HID port");
-                }
-                CFRelease(client);
-            }
-        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"mach异常: %@", e.reason]); }
-    }
+    static mach_port_t hidPort = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        mach_port_t bp;
+        task_get_bootstrap_port(mach_task_self(), &bp);
+        kern_return_t kr = bootstrap_look_up(bp, "com.apple.iohideventsystem", &hidPort);
+        if (kr == KERN_SUCCESS && hidPort) {
+            logMsg([NSString stringWithFormat:@"🔍 IOHIDServer port: 0x%X", hidPort]);
+        } else {
+            logMsg([NSString stringWithFormat:@"❌ bootstrap_look_up 失败: %s", mach_error_string(kr)]);
+            hidPort = 0;
+        }
+    });
     
-    if (GSSendEventPtr && GSEventCreateWithEventRecordPtr) {
+    if (hidPort && IOHIDEventCreateDigitizerFingerEventPtr) {
+        CGFloat scale = [UIScreen mainScreen].scale;
+        double px = x * scale, py = y * scale;
         @try {
-            uint8_t *buf = (uint8_t *)calloc(1, 72);
-            *(int *)buf = 3001;
-            *((int *)buf + 1) = 1;
-            *((uint64_t *)(buf + 8)) = mach_absolute_time();
-            *((CGFloat *)(buf + 24)) = x;
-            *((CGFloat *)(buf + 32)) = y;
-            *((CGFloat *)(buf + 40)) = 1.0;
-            *((int *)(buf + 52)) = 1;
-            void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf);
-            if (gs) { ((void (*)(void *))GSSendEventPtr)(gs); logMsg(@"GSSendEvent began ✅"); }
-            free(buf);
-            
+            uint64_t ts = mach_absolute_time();
+            IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
+            if (down) {
+                // 直接 mach_msg 到 HIDServer port
+                size_t es = 128;
+                mach_msg_header_t *msg = (mach_msg_header_t *)calloc(1, sizeof(mach_msg_header_t) + es);
+                msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+                msg->msgh_remote_port = hidPort;
+                msg->msgh_size = sizeof(mach_msg_header_t) + es;
+                msg->msgh_id = 0;
+                memcpy((uint8_t *)msg + sizeof(mach_msg_header_t), (uint8_t *)down, es);
+                kern_return_t kr = mach_msg_send(msg);
+                logMsg([NSString stringWithFormat:@"mach_msg_send(down) → HIDServer: %s", mach_error_string(kr)]);
+                free(msg);
+                CFRelease(down);
+            }
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                uint8_t *buf2 = (uint8_t *)calloc(1, 72);
-                *(int *)buf2 = 3001;
-                *((int *)buf2 + 1) = 3;
-                *((uint64_t *)(buf2 + 8)) = mach_absolute_time();
-                *((CGFloat *)(buf2 + 24)) = x;
-                *((CGFloat *)(buf2 + 32)) = y;
-                *((CGFloat *)(buf2 + 40)) = 1.0;
-                *((int *)(buf2 + 52)) = 1;
-                void *gs2 = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf2);
-                if (gs2) { ((void (*)(void *))GSSendEventPtr)(gs2); logMsg(@"GSSendEvent ended ✅"); }
-                free(buf2);
+                IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
+                if (up) {
+                    size_t es = 128;
+                    mach_msg_header_t *msg = (mach_msg_header_t *)calloc(1, sizeof(mach_msg_header_t) + es);
+                    msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+                    msg->msgh_remote_port = hidPort;
+                    msg->msgh_size = sizeof(mach_msg_header_t) + es;
+                    memcpy((uint8_t *)msg + sizeof(mach_msg_header_t), (uint8_t *)up, es);
+                    mach_msg_send(msg);
+                    free(msg);
+                    CFRelease(up);
+                    logMsg(@"mach_msg up → HIDServer ✅");
+                }
             });
-        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"GSEvent异常: %@", e.reason]); }
+        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"异常: %@", e.reason]); }
     }
     
     UIView *circle = [[UIView alloc] initWithFrame:CGRectMake(x - 15, y - 15, 30, 30)];
@@ -159,31 +109,6 @@ static TestWindow *s_window = nil;
 - (void)doClear { [s_log setString:@""]; }
 @end
 
-%hook UIApplication
-- (void)sendEvent:(UIEvent *)e {
-    %orig;
-    if (e.type == UIEventTypeTouches) {
-        @try {
-            NSSet *touches = [e allTouches];
-            UITouch *t = [touches anyObject];
-            if (t.phase == UITouchPhaseEnded) {
-                id record = [t valueForKey:@"_touchRecord"];
-                if (record) {
-                    NSData *data = [record valueForKey:@"recordData"];
-                    if (!data) data = [NSData dataWithBytes:(__bridge void *)record length:72];
-                    if (data.length >= 72) {
-                        const uint8_t *bytes = (const uint8_t *)data.bytes;
-                        NSMutableString *hex = [NSMutableString string];
-                        for (int i = 0; i < 72; i++) [hex appendFormat:@"%02X ", bytes[i]];
-                        logMsg([NSString stringWithFormat:@"📐 TouchRecord 72字节:\n%@", hex]);
-                    }
-                }
-            }
-        } @catch (NSException *ex) {}
-    }
-}
-%end
-
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
@@ -194,29 +119,15 @@ static TestWindow *s_window = nil;
         s_log = [NSMutableString string];
         
         IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
-        IOHIDEventSystemClientCreatePtr = (void *(*)(CFAllocatorRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-        IOHIDEventSystemClientDispatchEventPtr = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
-        GSSendEventPtr = dlsym(RTLD_DEFAULT, "GSSendEvent");
-        GSEventCreateWithEventRecordPtr = dlsym(RTLD_DEFAULT, "GSEventCreateWithEventRecord");
-        GSEventSetTypePtr = dlsym(RTLD_DEFAULT, "GSEventSetType");
-        void *IOHIDEventSystemClientCopyServicePtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCopyService");
-
-        logMsg(@"=== 符号状态 ===");
-        logMsg([NSString stringWithFormat:@"IOKit: %@", IOHIDEventCreateDigitizerFingerEventPtr ? @"✅" : @"❌"]);
-        logMsg([NSString stringWithFormat:@"GSSendEvent: %@", GSSendEventPtr ? @"✅" : @"❌"]);
-        logMsg([NSString stringWithFormat:@"GSEventCreateWithEventRecord: %@", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"]);
-        logMsg([NSString stringWithFormat:@"GSEventSetType: %@", GSEventSetTypePtr ? @"✅" : @"❌"]);
-        logMsg([NSString stringWithFormat:@"IOHIDEventSystemClientCopyService: %@", IOHIDEventSystemClientCopyServicePtr ? @"✅" : @"❌"]);
         
-        CGFloat pw = [UIScreen mainScreen].bounds.size.width - 60;
-        CGFloat ph = 200;
+        logMsg(@"=== 符号状态 ===");
+        logMsg([NSString stringWithFormat:@"IOHIDEventCreateDigitizerFingerEvent: %@", IOHIDEventCreateDigitizerFingerEventPtr ? @"✅" : @"❌"]);
+        
+        CGFloat pw = [UIScreen mainScreen].bounds.size.width - 60, ph = 200;
         UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(30, 150, pw, ph)];
-        panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        panel.layer.cornerRadius = 10; panel.layer.borderWidth = 1; panel.layer.borderColor = [UIColor greenColor].CGColor;
-        UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(pw/2 - 20, 4, 40, 4)]; handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6]; handle.layer.cornerRadius = 2;
-        [panel addSubview:handle];
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:s_window action:@selector(handlePan:)];
-        [panel addGestureRecognizer:pan];
+        panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85]; panel.layer.cornerRadius = 10; panel.layer.borderWidth = 1; panel.layer.borderColor = [UIColor greenColor].CGColor;
+        UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(pw/2 - 20, 4, 40, 4)]; handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6]; handle.layer.cornerRadius = 2; [panel addSubview:handle];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:s_window action:@selector(handlePan:)]; [panel addGestureRecognizer:pan];
         UITextField *xf = [[UITextField alloc] initWithFrame:CGRectMake(12, 14, 70, 28)]; xf.borderStyle = UITextBorderStyleRoundedRect; xf.backgroundColor = [UIColor darkGrayColor]; xf.textColor = [UIColor whiteColor]; xf.font = [UIFont systemFontOfSize:12]; xf.text = @"100"; xf.tag = 10; [panel addSubview:xf];
         UITextField *yf = [[UITextField alloc] initWithFrame:CGRectMake(88, 14, 70, 28)]; yf.borderStyle = UITextBorderStyleRoundedRect; yf.backgroundColor = [UIColor darkGrayColor]; yf.textColor = [UIColor whiteColor]; yf.font = [UIFont systemFontOfSize:12]; yf.text = @"200"; yf.tag = 11; [panel addSubview:yf];
         UIButton *tb = [UIButton buttonWithType:UIButtonTypeSystem]; tb.frame = CGRectMake(165, 12, 55, 30); [tb setTitle:@"点击" forState:UIControlStateNormal]; [tb setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; tb.titleLabel.font = [UIFont boldSystemFontOfSize:13]; [tb addTarget:s_window action:@selector(doTap) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:tb];
