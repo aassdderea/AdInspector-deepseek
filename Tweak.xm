@@ -199,12 +199,14 @@ static TestWindow *s_window = nil;
         GSSendEventPtr = dlsym(RTLD_DEFAULT, "GSSendEvent");
         GSEventCreateWithEventRecordPtr = dlsym(RTLD_DEFAULT, "GSEventCreateWithEventRecord");
         GSEventSetTypePtr = dlsym(RTLD_DEFAULT, "GSEventSetType");
-        
+        void *IOHIDEventSystemClientCopyServicePtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCopyService");
+
         logMsg(@"=== 符号状态 ===");
         logMsg([NSString stringWithFormat:@"IOKit: %@", IOHIDEventCreateDigitizerFingerEventPtr ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"GSSendEvent: %@", GSSendEventPtr ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"GSEventCreateWithEventRecord: %@", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"GSEventSetType: %@", GSEventSetTypePtr ? @"✅" : @"❌"]);
+        logMsg([NSString stringWithFormat:@"IOHIDEventSystemClientCopyService: %@", IOHIDEventSystemClientCopyServicePtr ? @"✅" : @"❌"]);
         
         CGFloat pw = [UIScreen mainScreen].bounds.size.width - 60;
         CGFloat ph = 200;
