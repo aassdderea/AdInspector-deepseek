@@ -16,15 +16,23 @@ static void logMsg(NSString *m) {
         if (e.type == UIEventTypeTouches) {
             UITouch *t = [[e allTouches] anyObject];
             if (t.phase == UITouchPhaseEnded) {
-                // 只 dump UITouch 的坐标，不碰 _gsEvent
                 CGPoint loc = [t locationInView:nil];
-                logMsg([NSString stringWithFormat:@"📐 触摸坐标: (%.0f, %.0f) phase:%ld", loc.x, loc.y, (long)t.phase]);
+                logMsg([NSString stringWithFormat:@"📐 触摸坐标: (%.0f, %.0f)", loc.x, loc.y]);
                 
-                // 安全尝试 _gsEvent
                 id gs = nil;
                 @try { gs = [e valueForKey:@"_gsEvent"]; } @catch (NSException *ex) {}
                 if (gs) {
-                    logMsg([NSString stringWithFormat:@"✅ _gsEvent 存在: %@", [gs class]]);
+                    logMsg([NSString stringWithFormat:@"✅ _gsEvent 存在: %@", NSStringFromClass([gs class])]);
+                    @try {
+                        NSData *d = [NSData dataWithBytes:(__bridge const void *)gs length:128];
+                        const uint8_t *b = (const uint8_t *)d.bytes;
+                        NSMutableString *h = [NSMutableString string];
+                        for (int i = 0; i < 128; i++) {
+                            [h appendFormat:@"%02X ", b[i]];
+                            if ((i + 1) % 16 == 0) [h appendString:@"\n"];
+                        }
+                        logMsg([NSString stringWithFormat:@"📐 _gsEvent 128字节:\n%@", h]);
+                    } @catch (NSException *e2) {}
                 } else {
                     logMsg(@"❌ _gsEvent 不存在");
                 }
@@ -37,18 +45,25 @@ static void logMsg(NSString *m) {
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         s_log = [NSMutableString string];
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 80, [UIScreen mainScreen].bounds.size.width - 20, 500)];
-        label.text = @"用手触摸屏幕";
+        
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 100, [UIScreen mainScreen].bounds.size.width - 20, 200)];
+        label.text = @"用手触摸App按钮，看日志";
         label.textColor = [UIColor greenColor];
-        label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        label.font = [UIFont systemFontOfSize:11];
+        label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
+        label.font = [UIFont systemFontOfSize:13];
         label.numberOfLines = 0;
         label.layer.cornerRadius = 8;
         label.clipsToBounds = YES;
+        label.userInteractionEnabled = NO;
+        
         UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        w.windowLevel = CGFLOAT_MAX; w.backgroundColor = [UIColor clearColor]; w.hidden = NO;
-        w.userInteractionEnabled = NO;
+        w.windowLevel = UIWindowLevelAlert + 1;
+        w.backgroundColor = [UIColor clearColor];
+        w.hidden = NO;
         [w addSubview:label];
-        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { label.text = s_log; }];
+        
+        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) {
+            label.text = s_log;
+        }];
     });
 }
