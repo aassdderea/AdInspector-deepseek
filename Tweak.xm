@@ -22,17 +22,7 @@ static void logMsg(NSString *m) {
                 id gs = nil;
                 @try { gs = [e valueForKey:@"_gsEvent"]; } @catch (NSException *ex) {}
                 if (gs) {
-                    logMsg([NSString stringWithFormat:@"✅ _gsEvent 存在: %@", NSStringFromClass([gs class])]);
-                    @try {
-                        NSData *d = [NSData dataWithBytes:(__bridge const void *)gs length:128];
-                        const uint8_t *b = (const uint8_t *)d.bytes;
-                        NSMutableString *h = [NSMutableString string];
-                        for (int i = 0; i < 128; i++) {
-                            [h appendFormat:@"%02X ", b[i]];
-                            if ((i + 1) % 16 == 0) [h appendString:@"\n"];
-                        }
-                        logMsg([NSString stringWithFormat:@"📐 _gsEvent 128字节:\n%@", h]);
-                    } @catch (NSException *e2) {}
+                    logMsg([NSString stringWithFormat:@"✅ _gsEvent 存在: %@", [gs class]]);
                 } else {
                     logMsg(@"❌ _gsEvent 不存在");
                 }
