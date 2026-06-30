@@ -10,8 +10,8 @@
 // ==================== Accessibility 类型前向声明 ====================
 typedef const struct __AXUIElement *AXUIElementRef;
 typedef int32_t AXError;
-static CFStringRef kAXPressAction = NULL;
-static CFStringRef kAXTapAction = NULL;
+static CFStringRef kAXPressAction;
+static CFStringRef kAXTapAction;
 
 // ==================== 全局配置 ====================
 static NSArray *s_tapConfigs = nil;
@@ -92,8 +92,8 @@ static void simulateTap(CGFloat x, CGFloat y) {
     static AXError (*AXUIElementPerformActionPtr)(AXUIElementRef, CFStringRef) = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        kAXPressAction = (CFStringRef)NSSelectorFromString(@"AXPress");
-        kAXTapAction = (CFStringRef)NSSelectorFromString(@"AXTap");
+        kAXPressAction = (__bridge CFStringRef)@"AXPress";
+        kAXTapAction = (__bridge CFStringRef)@"AXTap";
         handle = dlopen("/System/Library/Frameworks/Accessibility.framework/Accessibility", RTLD_NOW);
         if (!handle) handle = dlopen("/System/Library/PrivateFrameworks/Accessibility.framework/Accessibility", RTLD_NOW);
         if (!handle) handle = dlopen("/System/Library/Frameworks/Accessibility.framework/Versions/A/Accessibility", RTLD_NOW);
