@@ -4,9 +4,14 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
-#import <Accessibility/Accessibility.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
+
+// ==================== Accessibility 类型前向声明 ====================
+typedef const struct __AXUIElement *AXUIElementRef;
+typedef int32_t AXError;
+static CFStringRef kAXPressAction = NULL;
+static CFStringRef kAXTapAction = NULL;
 
 // ==================== 全局配置 ====================
 static NSArray *s_tapConfigs = nil;
@@ -79,21 +84,42 @@ static void showTapIndicator(CGFloat x, CGFloat y) {
     });
 }
 
-// ==================== Accessibility 触摸 ====================
+// ==================== Accessibility 动态加载触摸 ====================
 static void simulateTap(CGFloat x, CGFloat y) {
-    AXUIElementRef appRef = AXUIElementCreateApplication(getpid());
-    AXUIElementRef element = NULL;
-    AXError err = AXUIElementCopyElementAtPosition(appRef, x, y, &element);
-    if (err == kAXErrorSuccess && element) {
-        AXError tapErr = AXUIElementPerformAction(element, kAXPressAction);
-        if (tapErr != kAXErrorSuccess) {
-            tapErr = AXUIElementPerformAction(element, kAXTapAction);
+    static void *handle = NULL;
+    static AXUIElementRef (*AXUIElementCreateApplicationPtr)(pid_t) = NULL;
+    static AXError (*AXUIElementCopyElementAtPositionPtr)(AXUIElementRef, CGFloat, CGFloat, AXUIElementRef *) = NULL;
+    static AXError (*AXUIElementPerformActionPtr)(AXUIElementRef, CFStringRef) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kAXPressAction = (CFStringRef)NSSelectorFromString(@"AXPress");
+        kAXTapAction = (CFStringRef)NSSelectorFromString(@"AXTap");
+        handle = dlopen("/System/Library/Frameworks/Accessibility.framework/Accessibility", RTLD_NOW);
+        if (!handle) handle = dlopen("/System/Library/PrivateFrameworks/Accessibility.framework/Accessibility", RTLD_NOW);
+        if (!handle) handle = dlopen("/System/Library/Frameworks/Accessibility.framework/Versions/A/Accessibility", RTLD_NOW);
+        if (handle) {
+            AXUIElementCreateApplicationPtr = (AXUIElementRef (*)(pid_t))dlsym(handle, "AXUIElementCreateApplication");
+            AXUIElementCopyElementAtPositionPtr = (AXError (*)(AXUIElementRef, CGFloat, CGFloat, AXUIElementRef *))dlsym(handle, "AXUIElementCopyElementAtPosition");
+            AXUIElementPerformActionPtr = (AXError (*)(AXUIElementRef, CFStringRef))dlsym(handle, "AXUIElementPerformAction");
         }
-        if (tapErr == kAXErrorSuccess) {
+        if (AXUIElementCreateApplicationPtr && AXUIElementCopyElementAtPositionPtr && AXUIElementPerformActionPtr) {
+            [[TapControllerPanel shared] showLog:@"✅ Accessibility 加载成功\n"];
+        } else {
+            [[TapControllerPanel shared] showLog:@"❌ Accessibility 不可用\n"];
+        }
+    });
+    if (!AXUIElementCreateApplicationPtr || !AXUIElementCopyElementAtPositionPtr || !AXUIElementPerformActionPtr) return;
+    AXUIElementRef appRef = AXUIElementCreateApplicationPtr(getpid());
+    AXUIElementRef element = NULL;
+    AXError err = AXUIElementCopyElementAtPositionPtr(appRef, x, y, &element);
+    if (err == 0 && element) {
+        AXError tapErr = AXUIElementPerformActionPtr(element, kAXPressAction);
+        if (tapErr != 0) tapErr = AXUIElementPerformActionPtr(element, kAXTapAction);
+        if (tapErr == 0) {
             [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 AX (%.0f,%.0f) ✅\n", x, y]];
             showTapIndicator(x, y);
         } else {
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ AX 失败 err=%d (%.0f,%.0f)\n", tapErr, x, y]];
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ AX 失败 err=%d\n", tapErr]];
         }
         CFRelease(element);
     } else {
