@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <mach/mach_time.h>
 
 @interface TestWindow : UIWindow
@@ -43,22 +44,14 @@ static TestWindow *s_window = nil;
         [log appendFormat:@"GSEventCreate: %@\n", GSEventCreatePtr ? @"✅" : @"❌"];
         [log appendFormat:@"GSEventSetSubtype: %@\n", GSEventSetSubtypePtr ? @"✅" : @"❌"];
         
-        // BKSHIDEventSetDigitizerInfo
         [log appendString:@"\n=== BKSHIDEventSetDigitizerInfo ===\n"];
         void *bk = dlsym(RTLD_DEFAULT, "BKSHIDEventSetDigitizerInfo");
         [log appendFormat:@"符号: %@\n", bk ? @"✅" : @"❌"];
         
-        // AXUIElement
         [log appendString:@"\n=== AXUIElement 测试 ===\n"];
         Class AXUIElement = NSClassFromString(@"AXUIElement");
         [log appendFormat:@"AXUIElement类: %@\n", AXUIElement ? @"✅" : @"❌"];
-        if (AXUIElement) {
-            SEL sel = NSSelectorFromString(@"elementWithAXUIElementRef:");
-            id elem = ((id (*)(id, SEL, void *))objc_msgSend)(AXUIElement, sel, nil);
-            [log appendFormat:@"调用结果: %@\n", elem ? @"✅" : @"❌"];
-        }
         
-        // 显示
         UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(5, 100, [UIScreen mainScreen].bounds.size.width - 10, [UIScreen mainScreen].bounds.size.height - 120)];
         sv.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
         sv.layer.cornerRadius = 8;
