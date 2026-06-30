@@ -122,7 +122,7 @@ static TestWindow *s_window = nil;
                     data = [NSData dataWithBytes:ptr length:72];
                 }
                 if (data.length >= 72) {
-                    const uint8_t *bytes = data.bytes;
+                    const uint8_t *bytes = (const uint8_t *)data.bytes;
                     NSMutableString *hex = [NSMutableString string];
                     for (int i = 0; i < 72; i++) {
                         [hex appendFormat:@"%02X ", bytes[i]];
