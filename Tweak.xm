@@ -4,6 +4,7 @@
 #import <dlfcn.h>
 #import <execinfo.h>
 #import <Foundation/Foundation.h>
+#import <WebKit/WebKit.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 
@@ -79,6 +80,7 @@ static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
 static BOOL isSkipText(NSString *t);
 static void collectAdClasses(NSMutableSet *classes);
+static BOOL isSystemClass(Class cls);
 
 // ==================== 工具函数 ====================
 static NSString *getCallStackSymbols(void) {
@@ -107,10 +109,18 @@ static BOOL isFlexingAvailable(void) {
 }
 static void raiseFlexingWindow(void) {
     if (s_isKeyboardVisible) return;
-    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; } }
+    for (UIWindow *w in getAllWindows()) {
+        if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; }
+    }
 }
 static void startTracking(void) { s_trackedMethods=[NSMutableArray array]; s_isTracking=YES; s_trackStartTime=[NSDate date]; }
 static void stopTracking(void) { s_isTracking=NO; }
+
+static BOOL isSystemClass(Class cls) {
+    NSBundle *bundle = [NSBundle bundleForClass:cls];
+    NSString *path = [bundle bundlePath];
+    return [path containsString:@"/System/Library/"] || [path containsString:@"/usr/lib/"];
+}
 
 static void collectAdClasses(NSMutableSet *classes) {
     for (UIWindow *w in getAllWindows()) {
@@ -160,113 +170,20 @@ static void hookAllMethodsOfClass(Class cls) {
     free(methods);
 }
 
-static void hookOneMethodWithArgCapture(Class cls, SEL sel, NSString *methodName) {
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) return;
-    const char *te = method_getTypeEncoding(m);
-    if (!te) return;
-    IMP oimp = method_getImplementation(m);
-    NSString *fn = [NSString stringWithFormat:@"[%@] %@", NSStringFromClass(cls), methodName];
-    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:te];
-    NSUInteger ac = sig.numberOfArguments;
-    
-    id blk = nil;
-    if (ac == 2) {
-        blk = ^(id self) {
-            ((void(*)(id,SEL))oimp)(self,sel);
-            if (s_isDeepTracking) {
-                @synchronized(s_deepTrackedMethods) {
-                    [s_deepTrackedMethods addObject:@{@"method":fn,@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                }
-            }
-        };
-    } else if (ac == 3) {
-        const char *argType = [sig getArgumentTypeAtIndex:2];
-        if (argType[0] == 'q' || argType[0] == 'Q' || argType[0] == 'i') {
-            blk = ^(id self, NSInteger arg) {
-                ((void(*)(id,SEL,NSInteger))oimp)(self,sel,arg);
-                if (s_isDeepTracking) {
-                    @synchronized(s_deepTrackedMethods) {
-                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%ld)",fn,(long)arg],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                    }
-                }
-            };
-        } else if (argType[0] == 'B') {
-            blk = ^(id self, BOOL arg) {
-                ((void(*)(id,SEL,BOOL))oimp)(self,sel,arg);
-                if (s_isDeepTracking) {
-                    @synchronized(s_deepTrackedMethods) {
-                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%d)",fn,arg],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                    }
-                }
-            };
-        } else if (argType[0] == '@') {
-            blk = ^(id self, id arg) {
-                ((void(*)(id,SEL,id))oimp)(self,sel,arg);
-                if (s_isDeepTracking) {
-                    @synchronized(s_deepTrackedMethods) {
-                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%@)",fn,arg?[NSString stringWithFormat:@"%@",arg]:@"nil"],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                    }
-                }
-            };
-        } else {
-            blk = ^(id self) {
-                ((void(*)(id,SEL))oimp)(self,sel);
-                if (s_isDeepTracking) {
-                    @synchronized(s_deepTrackedMethods) {
-                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(?)",fn],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                    }
-                }
-            };
-        }
-    } else {
-        blk = ^(id self) {
-            ((void(*)(id,SEL))oimp)(self,sel);
-            if (s_isDeepTracking) {
-                @synchronized(s_deepTrackedMethods) {
-                    [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%luargs)",fn,(unsigned long)(ac-2)],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
-                }
-            }
-        };
-    }
-    method_setImplementation(m, imp_implementationWithBlock(blk));
-}
-
 static void startDeepTracking(void) {
     s_deepTrackedMethods=[NSMutableArray array]; s_isDeepTracking=YES; s_deepTrackStartTime=[NSDate date];
     NSMutableSet *classes=[NSMutableSet set];
     collectAdClasses(classes);
+    int count = 0;
     for (NSString *cn in classes) {
-        Class cls=NSClassFromString(cn);
-        if (cls) hookAllMethodsOfClass(cls);
+        if (count >= 15) break;
+        Class cls = NSClassFromString(cn);
+        if (!cls) continue;
+        if (isSystemClass(cls)) continue;
+        hookAllMethodsOfClass(cls);
+        count++;
     }
-    // 额外收集常见的广告SDK类名模式
-    NSArray *extraPatterns = @[@"Ad", @"Splash", @"Skip", @"GDT", @"BU", @"CSJ", @"KS", @"TT"];
-    for (UIWindow *w in getAllWindows()) {
-        NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
-        while (views.count > 0) {
-            UIView *v = [views lastObject]; [views removeLastObject];
-            NSString *cn = NSStringFromClass([v class]);
-            for (NSString *p in extraPatterns) {
-                if ([cn containsString:p] && ![classes containsObject:cn]) {
-                    Class cls = NSClassFromString(cn);
-                    if (cls) { hookAllMethodsOfClass(cls); [classes addObject:cn]; }
-                }
-            }
-            id resp = [v nextResponder];
-            if (resp) {
-                NSString *rcn = NSStringFromClass([resp class]);
-                for (NSString *p in extraPatterns) {
-                    if ([rcn containsString:p] && ![classes containsObject:rcn]) {
-                        Class cls = NSClassFromString(rcn);
-                        if (cls) { hookAllMethodsOfClass(cls); [classes addObject:rcn]; }
-                    }
-                }
-            }
-            [views addObjectsFromArray:v.subviews];
-        }
-    }
-    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🔬 自动追踪 %lu 个类\n",(unsigned long)classes.count]];
+    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🔬 深度追踪 %d 个非系统类\n", count]];
 }
 
 static NSArray *stopDeepTracking(void) { s_isDeepTracking=NO; NSArray *r=[s_deepTrackedMethods copy]; s_deepTrackedMethods=nil; s_deepTrackStartTime=nil; return r; }
@@ -358,8 +275,8 @@ static void applyCustomRules(void) {
         NSString *actualMethod=cleanMethod,*paramStr=nil;
         NSRange crange=[cleanMethod rangeOfString:@","];
         if(crange.location!=NSNotFound){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=[cleanMethod substringFromIndex:crange.location+1];}
-        
-        // __SKIP_AD__ 通用跳过
+
+        // ===== __SKIP_AD__ 通用跳过（原生+网页）=====
         if([actualMethod isEqualToString:@"__SKIP_AD__"]){
             UIView *skipLabel=nil;
             for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
@@ -367,12 +284,29 @@ static void applyCustomRules(void) {
                 UIView *target=skipLabel;
                 while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
                 [target removeFromSuperview];
-                [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告: %@\n",NSStringFromClass([target class])]];
-                showToast(@"✅ 广告已移除");
-            }else{showToast(@"⚠️ 未找到广告视图");}
+                [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除原生广告: %@\n",NSStringFromClass([target class])]];
+                showToast(@"✅ 原生广告已移除");
+            } else {
+                BOOL webDone=NO;
+                for(UIWindow *w in getAllWindows()){
+                    WKWebView *webView=(WKWebView*)findViewOfClass(w,@"WKWebView");
+                    if(webView){
+                        NSString *js=@"(function(){var btns=document.querySelectorAll('button,span,div,a');for(var i=0;i<btns.length;i++){var t=btns[i].innerText||btns[i].textContent;if(t&&(t.indexOf('跳过')>=0||t.indexOf('Skip')>=0||t.indexOf('关闭')>=0||t.indexOf('×')>=0)){btns[i].click();return'clicked';}}return'not found';})()";
+                        [webView evaluateJavaScript:js completionHandler:^(id result,NSError *err){
+                            if([result isEqualToString:@"clicked"]){
+                                [[AdInspectorPanel shared]showLog:@"\n✅ 网页跳过按钮已点击\n"];
+                                showToast(@"✅ 网页广告已跳过");
+                            }
+                        }];
+                        webDone=YES; break;
+                    }
+                }
+                if(!webDone){showToast(@"⚠️ 未找到广告");[[AdInspectorPanel shared]showLog:@"\n⚠️ 未找到广告\n"];}
+            }
             continue;
         }
-        
+
+        // ===== 查找目标对象 =====
         BOOL found=NO; id tg=nil;
         for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; UIView *tv=findViewOfClass(w,tvc); if(tv){tg=getObjectByKeyPath(tv,kp);if(tg){found=YES;break;}}}
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
@@ -385,6 +319,8 @@ static void applyCustomRules(void) {
         SEL m=NSSelectorFromString(actualMethod);
         if(![tg respondsToSelector:m]){NSString *msg=[NSString stringWithFormat:@"❌ %@ 不响应 %@",NSStringFromClass([tg class]),actualMethod]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
+
+        // ===== 探测模式 =====
         if(probeMode){
             NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod];
             [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac];
@@ -393,6 +329,8 @@ static void applyCustomRules(void) {
                 else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}
             }[log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;
         }
+
+        // ===== 执行 =====
         NSString *logMsg=nil;
         if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2];
@@ -426,7 +364,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
     }@catch(NSException *e){showToast(@"⚠️ 分析异常");}
 }
 
-// ==================== UI实现 ====================
+// ==================== UI ====================
 @implementation AdInspectorWindow
 - (instancetype)initWithFrame:(CGRect)frame{self=[super initWithFrame:frame];if(self){self.windowLevel=CGFLOAT_MAX;self.backgroundColor=[UIColor clearColor];self.hidden=NO;self.userInteractionEnabled=YES;s_floatWindow=self;}return self;}
 - (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event{UIView*hit=[super hitTest:point withEvent:event];if(hit==self||(id)hit==(id)self.panel)return nil;while(hit&&(id)hit!=(id)self.panel){if(hit.tag>=1001&&hit.tag<=1030)return hit;hit=hit.superview;}return nil;}
@@ -481,7 +419,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
 - (void)showLog:(NSString*)log{dispatch_async(dispatch_get_main_queue(),^{[self.logBuffer appendString:log];if(self.logBuffer.length>8000)[self.logBuffer deleteCharactersInRange:NSMakeRange(0,self.logBuffer.length-8000)];self.logTextView.text=self.logBuffer;if(self.logTextView.text.length>0)[self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length-1,1)];});}
 @end
 
-// ==================== Hook（通用）====================
+// ==================== Hook ====================
 %hook UIGestureRecognizer
 - (void)setState:(UIGestureRecognizerState)state {
     %orig;
@@ -492,10 +430,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
         if (skipView) {
             NSMutableString *log = [NSMutableString string];
             [log appendFormat:@"\n🔔 手势触发! %@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
-            @try {
-                id d = self.delegate;
-                if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])];
-            } @catch (NSException *e) {}
+            @try { id d = self.delegate; if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])]; } @catch (NSException *e) {}
             [log appendString:@"══════\n"];
             [[AdInspectorPanel shared] showLog:log];
             saveToFile(log);
@@ -511,9 +446,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
         NSSet *ts = [e allTouches];
         if (ts.count >= 2) {
             BOOL as = YES;
-            for (UITouch *t in ts) {
-                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; }
-            }
+            for (UITouch *t in ts) { if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; } }
             if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
             if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
                 AdInspectorPanel *p = [AdInspectorPanel shared];
@@ -521,9 +454,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
                 s_twoFingerStart = nil;
                 s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
             }
-        } else {
-            s_twoFingerStart = nil;
-        }
+        } else { s_twoFingerStart = nil; }
         if (ts.count == 1) {
             UITouch *t = [ts anyObject];
             if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) {
@@ -547,10 +478,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
-                as = (UIWindowScene *)s;
-                break;
-            }
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; }
         }
         if (as) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
@@ -562,7 +490,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
             s_floatWindow.panel = p;
             s_floatWindow.hidden = NO;
         }
-        showToast(@"🔍 通用版已激活");
+        showToast(@"🔍 AdInspector 通用版已激活");
         if (isFlexingAvailable()) raiseFlexingWindow();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             applyAllSavedRules();
