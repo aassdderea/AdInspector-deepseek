@@ -1,48 +1,13 @@
-name: Build RealTouch Dylib
+TARGET := iphone:clang:latest:14.0
+INSTALL_TARGET_PROCESSES = SpringBoard
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+include $(THEOS)/makefiles/common.mk
 
-jobs:
-  build:
-    runs-on: macos-14
+TWEAK_NAME = RealTouch
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+RealTouch_FILES = Tweak.xm
+RealTouch_CFLAGS = -fobjc-arc
+RealTouch_FRAMEWORKS = UIKit Foundation
+RealTouch_LDFLAGS = -ldl
 
-    - name: Install ldid
-      run: brew install ldid
-
-    - name: Clone Theos
-      run: |
-      export THEOS=/opt/theos
-      sudo mkdir -p $THEOS
-        sudo chown -R $USER:staff $THEOS
-        git clone --recursive https://github.com/theos/theos.git $THEOS
-
-    - name: Build dylib
-      run: |
-        export THEOS=/opt/theos
-        export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-        export PREFIX=$SDKROOT/usr/
-        sudo mkdir -p $SDKROOT/usr
-        sudo ln -sf $(xcrun -f clang) $SDKROOT/usr/clang
-        sudo ln -sf $(xcrun -f clang++) $SDKROOT/usr/clang++
-        sudo ln -sf $(xcrun -f lipo) $SDKROOT/usr/lipo
-        make clean
-        make
-
-    - name: Find dylib
-      run: |
-        find . -name "*.dylib" -type f
-        ls -la .theos/obj/debug/ 2>/dev/null || echo "no debug dir"
-        ls -la .theos/obj/ 2>/dev/null || echo "no obj dir"
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: RealTouch.dylib
-        path: "**/*.dylib"
+include $(THEOS_MAKE_PATH)/tweak.mk
