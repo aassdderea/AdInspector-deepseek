@@ -14,7 +14,7 @@ static IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEventPtr)(CFAllocatorRef, 
 static IOHIDEventSystemClientRef (*IOHIDEventSystemClientCreatePtr)(CFAllocatorRef) = NULL;
 static void (*IOHIDEventSystemClientDispatchEventPtr)(IOHIDEventSystemClientRef, IOHIDEventRef) = NULL;
 static BOOL s_iokitAvailable = NO;
-static BOOL s_forceUIKit = YES; // 强制走 UIKit 层
+static BOOL s_forceUIKit = YES;
 
 static void loadIOKitIfNeeded(void) {
     static BOOL tried = NO;
@@ -23,18 +23,12 @@ static void loadIOKitIfNeeded(void) {
     void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
     if (!handle) handle = dlopen("/System/Library/PrivateFrameworks/IOKit.framework/IOKit", RTLD_NOW);
     if (!handle) handle = dlopen("/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit", RTLD_NOW);
-    if (!handle) {
-        [[TapControllerPanel shared] showLog:@"❌ IOKit dlopen 失败\n"];
-        return;
-    }
+    if (!handle) return;
     IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(handle, "IOHIDEventCreateDigitizerFingerEvent");
     IOHIDEventSystemClientCreatePtr = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(handle, "IOHIDEventSystemClientCreate");
     IOHIDEventSystemClientDispatchEventPtr = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(handle, "IOHIDEventSystemClientDispatchEvent");
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         s_iokitAvailable = YES;
-        [[TapControllerPanel shared] showLog:@"🔴 IOKit 加载成功\n"];
-    } else {
-        [[TapControllerPanel shared] showLog:@"❌ IOKit dlsym 失败\n"];
     }
 }
 
@@ -222,7 +216,6 @@ static void executeTapSequence(NSArray *configs, NSUInteger index) {
     UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🖐 模拟点击器";t.textColor=[UIColor systemGreenColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=2001;[self addSubview:t];
     UILabel *l1=[[UILabel alloc]initWithFrame:CGRectMake(12,34,80,20)];l1.text=@"点击序列:";l1.textColor=[UIColor whiteColor];l1.font=[UIFont systemFontOfSize:11];[self addSubview:l1];
     _configField=[[UITextField alloc]initWithFrame:CGRectMake(95,32,self.bounds.size.width-110,26)];_configField.borderStyle=UITextBorderStyleRoundedRect;_configField.backgroundColor=[UIColor darkGrayColor];_configField.textColor=[UIColor whiteColor];_configField.font=[UIFont systemFontOfSize:12];_configField.placeholder=@"x:y:秒|x2:y2:秒|...";_configField.tag=2011;_configField.delegate=self;[self addSubview:_configField];
-    // 强制UIKit开关
     UILabel *swLabel=[[UILabel alloc]initWithFrame:CGRectMake(12,64,100,20)];swLabel.text=@"强制UIKit:";swLabel.textColor=[UIColor whiteColor];swLabel.font=[UIFont systemFontOfSize:10];[self addSubview:swLabel];
     _forceUIKitSwitch=[[UISwitch alloc]initWithFrame:CGRectMake(100,60,50,28)];_forceUIKitSwitch.on=s_forceUIKit;_forceUIKitSwitch.tag=2019;[_forceUIKitSwitch addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];[self addSubview:_forceUIKitSwitch];
     UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(12,90,80,26);[p1 setTitle:@"预设:左上角" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:10];p1.tag=2016;[p1 addTarget:self action:@selector(preset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
@@ -286,7 +279,7 @@ static const NSTimeInterval kTwoFingerHoldDuration=0.5;
         for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}
         if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;TapControllerPanel *p=[TapControllerPanel shared];p.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,340);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_tapWindow addSubview:p];s_tapWindow.panel=p;s_tapWindow.hidden=NO;}
         if(s_iokitAvailable){
-            [[TapControllerPanel shared]showLog:[NSString stringWithFormat:@"🔴 IOKit 已加载 (强制UIKit:ON)\n"]];
+            [[TapControllerPanel shared]showLog:@"🔴 IOKit 已加载 (强制UIKit:ON)\n"];
             showToast(@"🟡 强制UIKit模式");
         }else{
             [[TapControllerPanel shared]showLog:@"🟡 UIKit 模式\n"];
