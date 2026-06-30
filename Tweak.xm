@@ -78,6 +78,7 @@ static void applyCustomRules(void);
 static UIView *findViewOfClass(UIView *root, NSString *cn);
 static id getObjectByKeyPath(id obj, NSString *kp);
 static BOOL isSkipText(NSString *t);
+static void collectAdClasses(NSMutableSet *classes);
 
 // ==================== 工具函数 ====================
 static NSString *getCallStackSymbols(void) {
@@ -101,20 +102,31 @@ static NSArray<UIWindow *> *getAllWindows(void) {
     return all;
 }
 static BOOL isFlexingAvailable(void) {
-    for (UIWindow *w in getAllWindows()) {
-        NSString *cn = NSStringFromClass([w class]);
-        if ([cn hasPrefix:@"FLEX"]) return YES;
-    }
+    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) return YES; }
     return NO;
 }
 static void raiseFlexingWindow(void) {
     if (s_isKeyboardVisible) return;
-    for (UIWindow *w in getAllWindows()) {
-        if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; }
-    }
+    for (UIWindow *w in getAllWindows()) { if ([NSStringFromClass([w class]) hasPrefix:@"FLEX"]) { w.windowLevel=CGFLOAT_MAX; w.hidden=NO; w.alpha=1.0; [w makeKeyAndVisible]; return; } }
 }
 static void startTracking(void) { s_trackedMethods=[NSMutableArray array]; s_isTracking=YES; s_trackStartTime=[NSDate date]; }
 static void stopTracking(void) { s_isTracking=NO; }
+
+static void collectAdClasses(NSMutableSet *classes) {
+    for (UIWindow *w in getAllWindows()) {
+        UIView *skip = findSkipLabelInView(w);
+        if (skip) {
+            UIView *cur = skip;
+            while (cur && ![cur isKindOfClass:[UIWindow class]]) {
+                [classes addObject:NSStringFromClass([cur class])];
+                id resp = [cur nextResponder];
+                if (resp) [classes addObject:NSStringFromClass([resp class])];
+                cur = cur.superview;
+            }
+            break;
+        }
+    }
+}
 
 static void hookAllMethodsOfClass(Class cls) {
     if (!cls) return;
@@ -147,12 +159,116 @@ static void hookAllMethodsOfClass(Class cls) {
     }
     free(methods);
 }
+
+static void hookOneMethodWithArgCapture(Class cls, SEL sel, NSString *methodName) {
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    const char *te = method_getTypeEncoding(m);
+    if (!te) return;
+    IMP oimp = method_getImplementation(m);
+    NSString *fn = [NSString stringWithFormat:@"[%@] %@", NSStringFromClass(cls), methodName];
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:te];
+    NSUInteger ac = sig.numberOfArguments;
+    
+    id blk = nil;
+    if (ac == 2) {
+        blk = ^(id self) {
+            ((void(*)(id,SEL))oimp)(self,sel);
+            if (s_isDeepTracking) {
+                @synchronized(s_deepTrackedMethods) {
+                    [s_deepTrackedMethods addObject:@{@"method":fn,@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                }
+            }
+        };
+    } else if (ac == 3) {
+        const char *argType = [sig getArgumentTypeAtIndex:2];
+        if (argType[0] == 'q' || argType[0] == 'Q' || argType[0] == 'i') {
+            blk = ^(id self, NSInteger arg) {
+                ((void(*)(id,SEL,NSInteger))oimp)(self,sel,arg);
+                if (s_isDeepTracking) {
+                    @synchronized(s_deepTrackedMethods) {
+                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%ld)",fn,(long)arg],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                    }
+                }
+            };
+        } else if (argType[0] == 'B') {
+            blk = ^(id self, BOOL arg) {
+                ((void(*)(id,SEL,BOOL))oimp)(self,sel,arg);
+                if (s_isDeepTracking) {
+                    @synchronized(s_deepTrackedMethods) {
+                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%d)",fn,arg],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                    }
+                }
+            };
+        } else if (argType[0] == '@') {
+            blk = ^(id self, id arg) {
+                ((void(*)(id,SEL,id))oimp)(self,sel,arg);
+                if (s_isDeepTracking) {
+                    @synchronized(s_deepTrackedMethods) {
+                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%@)",fn,arg?[NSString stringWithFormat:@"%@",arg]:@"nil"],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                    }
+                }
+            };
+        } else {
+            blk = ^(id self) {
+                ((void(*)(id,SEL))oimp)(self,sel);
+                if (s_isDeepTracking) {
+                    @synchronized(s_deepTrackedMethods) {
+                        [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(?)",fn],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                    }
+                }
+            };
+        }
+    } else {
+        blk = ^(id self) {
+            ((void(*)(id,SEL))oimp)(self,sel);
+            if (s_isDeepTracking) {
+                @synchronized(s_deepTrackedMethods) {
+                    [s_deepTrackedMethods addObject:@{@"method":[NSString stringWithFormat:@"%@(%luargs)",fn,(unsigned long)(ac-2)],@"time":@([[NSDate date] timeIntervalSinceDate:s_deepTrackStartTime])}];
+                }
+            }
+        };
+    }
+    method_setImplementation(m, imp_implementationWithBlock(blk));
+}
+
 static void startDeepTracking(void) {
     s_deepTrackedMethods=[NSMutableArray array]; s_isDeepTracking=YES; s_deepTrackStartTime=[NSDate date];
-    hookAllMethodsOfClass(NSClassFromString(@"GDTDLBusinessManager"));
-    hookAllMethodsOfClass(NSClassFromString(@"GDTDLRootView"));
-    hookAllMethodsOfClass(NSClassFromString(@"GDTSplashDLView"));
+    NSMutableSet *classes=[NSMutableSet set];
+    collectAdClasses(classes);
+    for (NSString *cn in classes) {
+        Class cls=NSClassFromString(cn);
+        if (cls) hookAllMethodsOfClass(cls);
+    }
+    // 额外收集常见的广告SDK类名模式
+    NSArray *extraPatterns = @[@"Ad", @"Splash", @"Skip", @"GDT", @"BU", @"CSJ", @"KS", @"TT"];
+    for (UIWindow *w in getAllWindows()) {
+        NSMutableArray *views = [NSMutableArray arrayWithArray:w.subviews];
+        while (views.count > 0) {
+            UIView *v = [views lastObject]; [views removeLastObject];
+            NSString *cn = NSStringFromClass([v class]);
+            for (NSString *p in extraPatterns) {
+                if ([cn containsString:p] && ![classes containsObject:cn]) {
+                    Class cls = NSClassFromString(cn);
+                    if (cls) { hookAllMethodsOfClass(cls); [classes addObject:cn]; }
+                }
+            }
+            id resp = [v nextResponder];
+            if (resp) {
+                NSString *rcn = NSStringFromClass([resp class]);
+                for (NSString *p in extraPatterns) {
+                    if ([rcn containsString:p] && ![classes containsObject:rcn]) {
+                        Class cls = NSClassFromString(rcn);
+                        if (cls) { hookAllMethodsOfClass(cls); [classes addObject:rcn]; }
+                    }
+                }
+            }
+            [views addObjectsFromArray:v.subviews];
+        }
+    }
+    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"\n🔬 自动追踪 %lu 个类\n",(unsigned long)classes.count]];
 }
+
 static NSArray *stopDeepTracking(void) { s_isDeepTracking=NO; NSArray *r=[s_deepTrackedMethods copy]; s_deepTrackedMethods=nil; s_deepTrackStartTime=nil; return r; }
 static NSString *getControlEventName(UIControlEvents e) {
     switch(e){case UIControlEventTouchDown:return @"TouchDown"; case UIControlEventTouchUpInside:return @"TouchUpInside"; default:return [NSString stringWithFormat:@"Evt%lu",(unsigned long)e];}
@@ -237,57 +353,46 @@ static void applyCustomRules(void) {
     for(NSDictionary *r in cr){
         NSString *tvc=r[@"targetView"],*kp=r[@"keyPath"],*mn=r[@"methodName"];
         if(!tvc||!kp||!mn)continue;
-        
-        // 探测模式：以?开头只打印签名不执行
         BOOL probeMode=[mn hasPrefix:@"?"];
         NSString *cleanMethod=probeMode?[mn substringFromIndex:1]:mn;
-        
         NSString *actualMethod=cleanMethod,*paramStr=nil;
         NSRange crange=[cleanMethod rangeOfString:@","];
         if(crange.location!=NSNotFound){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=[cleanMethod substringFromIndex:crange.location+1];}
         
-               // 查找对象
+        // __SKIP_AD__ 通用跳过
+        if([actualMethod isEqualToString:@"__SKIP_AD__"]){
+            UIView *skipLabel=nil;
+            for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
+            if(skipLabel){
+                UIView *target=skipLabel;
+                while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
+                [target removeFromSuperview];
+                [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告: %@\n",NSStringFromClass([target class])]];
+                showToast(@"✅ 广告已移除");
+            }else{showToast(@"⚠️ 未找到广告视图");}
+            continue;
+        }
+        
         BOOL found=NO; id tg=nil;
         for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; UIView *tv=findViewOfClass(w,tvc); if(tv){tg=getObjectByKeyPath(tv,kp);if(tg){found=YES;break;}}}
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
         if([kp isEqualToString:@"self"]&&!tg){Class tc=NSClassFromString(tvc);if(tc){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}else if(tg){tg=getObjectByKeyPath(tg,kp);}
         if(!tg){Class tc=NSClassFromString(tvc); if(tc){
-            for(UIWindow *w in getAllWindows()){
-                if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue;
-                id resp=w;
-                while(resp){
-                    if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}
-                    resp=[resp nextResponder];
-                }
-                if(tg)break;
-            }
-            if(!tg){
-                SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)};
-                for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);}
-            }
+            for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; id resp=w; while(resp){if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}resp=[resp nextResponder];} if(tg)break;}
+            if(!tg){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);}}
         }}
         if(!tg){NSString *msg=[NSString stringWithFormat:@"❌ 未找到 %@",tvc]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
-        
         SEL m=NSSelectorFromString(actualMethod);
         if(![tg respondsToSelector:m]){NSString *msg=[NSString stringWithFormat:@"❌ %@ 不响应 %@",NSStringFromClass([tg class]),actualMethod]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
-        
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
-        
-        // 探测模式：只打印签名
         if(probeMode){
             NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod];
-            [log appendFormat:@"  返回值: %s\n",sig.methodReturnType];
-            [log appendFormat:@"  参数数: %lu\n",(unsigned long)ac];
+            [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac];
             for(NSUInteger i=0;i<ac;i++){const char *t=[sig getArgumentTypeAtIndex:i]; [log appendFormat:@"  arg%lu: %s",(unsigned long)i,t];
                 if(i==0)[log appendString:@" (self)\n"]; else if(i==1)[log appendString:@" (_cmd)\n"];
-                else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q') [log appendString:@" → NSInteger\n"]; else if(t[0]=='i') [log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c') [log appendString:@" → BOOL\n"]; else if(t[0]=='d') [log appendString:@" → double\n"]; else if(t[0]=='f') [log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}
-            }
-            [log appendString:@"💡 去掉?号即可执行\n══════\n"];
-            [[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]);
-            continue;
+                else{if(t[0]=='@')[log appendString:@" → id/对象\n"]; else if(t[0]=='q'||t[0]=='Q')[log appendString:@" → NSInteger\n"]; else if(t[0]=='i')[log appendString:@" → int\n"]; else if(t[0]=='B'||t[0]=='c')[log appendString:@" → BOOL\n"]; else if(t[0]=='d')[log appendString:@" → double\n"]; else if(t[0]=='f')[log appendString:@" → float\n"]; else[log appendFormat:@" → %s\n",t];}
+            }[log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;
         }
-        
-        // 执行
         NSString *logMsg=nil;
         if(ac<=2){((void(*)(id,SEL))objc_msgSend)(tg,m); logMsg=[NSString stringWithFormat:@"✅ %@.%@ (无参)",NSStringFromClass([tg class]),actualMethod]; showToast([NSString stringWithFormat:@"✅ %@",actualMethod]);}
         else if(ac==3&&paramStr){const char *t=[sig getArgumentTypeAtIndex:2];
@@ -333,14 +438,14 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
 - (instancetype)initWithFrame:(CGRect)frame{self=[super initWithFrame:frame];if(self){
     self.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.90];self.layer.cornerRadius=10;self.layer.borderWidth=1.5;self.layer.borderColor=[UIColor cyanColor].CGColor;self.userInteractionEnabled=YES;self.clipsToBounds=NO;self.hidden=YES;
     [[NSNotificationCenter defaultCenter]addObserver:self selector:@selector(kbShow:) name:UIKeyboardWillShowNotification object:nil];[[NSNotificationCenter defaultCenter]addObserver:self selector:@selector(kbHide:) name:UIKeyboardWillHideNotification object:nil];
-    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,200,20)];t.text=@"🔍 AdInspector 通用版";t.textColor=[UIColor cyanColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=1001;[self addSubview:t];
+    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🔍 AdInspector 通用版";t.textColor=[UIColor cyanColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=1001;[self addSubview:t];
     UIButton *copyBtn=[UIButton buttonWithType:UIButtonTypeSystem];copyBtn.frame=CGRectMake(self.bounds.size.width-235,3,55,30);[copyBtn setTitle:@"📋复制" forState:UIControlStateNormal];[copyBtn setTitleColor:[UIColor colorWithRed:0 green:1 blue:0.5 alpha:1] forState:UIControlStateNormal];copyBtn.titleLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightBold];copyBtn.tag=1021;[copyBtn addTarget:self action:@selector(copyLog) forControlEvents:UIControlEventTouchUpInside];[self addSubview:copyBtn];
     UILabel *l1=[[UILabel alloc]initWithFrame:CGRectMake(12,34,80,20)];l1.text=@"目标视图类:";l1.textColor=[UIColor whiteColor];l1.font=[UIFont systemFontOfSize:11];[self addSubview:l1];
-    _targetViewField=[[UITextField alloc]initWithFrame:CGRectMake(95,32,self.bounds.size.width-110,26)];_targetViewField.borderStyle=UITextBorderStyleRoundedRect;_targetViewField.backgroundColor=[UIColor darkGrayColor];_targetViewField.textColor=[UIColor whiteColor];_targetViewField.font=[UIFont systemFontOfSize:12];_targetViewField.placeholder=@"如 GDTDLRootView";_targetViewField.tag=1011;_targetViewField.delegate=self;[self addSubview:_targetViewField];
+    _targetViewField=[[UITextField alloc]initWithFrame:CGRectMake(95,32,self.bounds.size.width-110,26)];_targetViewField.borderStyle=UITextBorderStyleRoundedRect;_targetViewField.backgroundColor=[UIColor darkGrayColor];_targetViewField.textColor=[UIColor whiteColor];_targetViewField.font=[UIFont systemFontOfSize:12];_targetViewField.placeholder=@"输入视图类名";_targetViewField.tag=1011;_targetViewField.delegate=self;[self addSubview:_targetViewField];
     UILabel *l2=[[UILabel alloc]initWithFrame:CGRectMake(12,64,80,20)];l2.text=@"KVC路径:";l2.textColor=[UIColor whiteColor];l2.font=[UIFont systemFontOfSize:11];[self addSubview:l2];
     _keyPathField=[[UITextField alloc]initWithFrame:CGRectMake(95,62,self.bounds.size.width-110,26)];_keyPathField.borderStyle=UITextBorderStyleRoundedRect;_keyPathField.backgroundColor=[UIColor darkGrayColor];_keyPathField.textColor=[UIColor whiteColor];_keyPathField.font=[UIFont systemFontOfSize:12];_keyPathField.placeholder=@"如 self";_keyPathField.tag=1012;_keyPathField.delegate=self;[self addSubview:_keyPathField];
     UILabel *l3=[[UILabel alloc]initWithFrame:CGRectMake(12,94,80,20)];l3.text=@"方法名:";l3.textColor=[UIColor whiteColor];l3.font=[UIFont systemFontOfSize:11];[self addSubview:l3];
-    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?开头=探测,逗号后=参数";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
+    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?探测 / 方法,参数 / __SKIP_AD__";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
     UIButton *addBtn=[UIButton buttonWithType:UIButtonTypeSystem];addBtn.frame=CGRectMake(12,126,60,30);[addBtn setTitle:@"添加" forState:UIControlStateNormal];[addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];addBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];addBtn.tag=1014;[addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside];[self addSubview:addBtn];
     UIButton *testBtn=[UIButton buttonWithType:UIButtonTypeSystem];testBtn.frame=CGRectMake(80,126,60,30);[testBtn setTitle:@"测试" forState:UIControlStateNormal];[testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];testBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];testBtn.tag=1015;[testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];[self addSubview:testBtn];
     UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(148,126,60,30);[p1 setTitle:@"预设1" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:11];p1.tag=1016;[p1 addTarget:self action:@selector(fillPreset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
@@ -362,8 +467,8 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
 - (BOOL)textFieldShouldReturn:(UITextField*)tf{[tf resignFirstResponder];return YES;}
 - (void)handlePan:(UIPanGestureRecognizer*)p{CGPoint t=[p translationInView:self];self.center=CGPointMake(self.center.x+t.x,self.center.y+t.y);[p setTranslation:CGPointZero inView:self];}
 - (void)hidePanel{self.hidden=YES;}
-- (void)fillPreset1{self.targetViewField.text=@"GDTDLRootView";self.keyPathField.text=@"self";self.methodNameField.text=@"GDTfunctionu0H2Y8:,3";}
-- (void)fillPreset2{self.targetViewField.text=@"GDTDLBusinessManager";self.keyPathField.text=@"self";self.methodNameField.text=@"onDestroy";}
+- (void)fillPreset1{self.targetViewField.text=@"UIView";self.keyPathField.text=@"self";self.methodNameField.text=@"__SKIP_AD__";}
+- (void)fillPreset2{self.targetViewField.text=@"";self.keyPathField.text=@"self";self.methodNameField.text=@"?探测方法签名";}
 - (void)copyLog{NSString *text=self.logBuffer;if(!text.length){showToast(@"⚠️ 日志为空");return;}[[UIPasteboard generalPasteboard]setString:text];showToast(@"✅ 日志已复制");}
 - (void)clearLog{[self.logBuffer setString:@""];self.logTextView.text=@"";showToast(@"🗑️ 日志已清屏");}
 - (void)addCustomRuleFromFields{NSString *tv=self.targetViewField.text,*kp=self.keyPathField.text,*mn=self.methodNameField.text;[self.targetViewField resignFirstResponder];[self.keyPathField resignFirstResponder];[self.methodNameField resignFirstResponder];if(!tv.length||!kp.length||!mn.length){showToast(@"⚠️ 请填写完整");return;}saveCustomRule(@{@"targetView":tv,@"keyPath":kp,@"methodName":mn});[self showLog:[NSString stringWithFormat:@"\n✅ 已添加: %@→[%@]%@\n",tv,kp,mn]];showToast(@"✅ 规则已添加");}
