@@ -18,8 +18,8 @@ jobs:
 
     - name: Clone Theos
       run: |
-        export THEOS=/opt/theos
-        sudo mkdir -p $THEOS
+      export THEOS=/opt/theos
+      sudo mkdir -p $THEOS
         sudo chown -R $USER:staff $THEOS
         git clone --recursive https://github.com/theos/theos.git $THEOS
 
