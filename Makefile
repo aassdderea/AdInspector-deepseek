@@ -7,7 +7,7 @@ TWEAK_NAME = RealTouch
 
 RealTouch_FILES = Tweak.xm
 RealTouch_CFLAGS = -fobjc-arc
-RealTouch_FRAMEWORKS = UIKit Foundation
+RealTouch_FRAMEWORKS = UIKit Foundation Accessibility
 RealTouch_LDFLAGS = -ldl
 
 include $(THEOS_MAKE_PATH)/tweak.mk
