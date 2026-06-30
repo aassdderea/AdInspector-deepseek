@@ -273,8 +273,16 @@ static void applyCustomRules(void) {
         BOOL probeMode=[mn hasPrefix:@"?"];
         NSString *cleanMethod=probeMode?[mn substringFromIndex:1]:mn;
         NSString *actualMethod=cleanMethod,*paramStr=nil;
-        NSRange crange=[cleanMethod rangeOfString:@","];
-        if(crange.location!=NSNotFound){actualMethod=[cleanMethod substringToIndex:crange.location];paramStr=[cleanMethod substringFromIndex:crange.location+1];}
+        NSRange crange=[cleanMethod rangeOfString:@"," options:NSBackwardsSearch];
+        if(crange.location!=NSNotFound){
+            // 检查逗号后面是不是数字或布尔值，避免把方法名里的逗号误解析
+            NSString *afterComma=[cleanMethod substringFromIndex:crange.location+1];
+            NSString *trimmed=[afterComma stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if(trimmed.length>0){
+                actualMethod=[cleanMethod substringToIndex:crange.location];
+                paramStr=trimmed;
+            }
+        }
 
         // ===== __SKIP_AD__ 通用跳过（原生+网页）=====
         if([actualMethod isEqualToString:@"__SKIP_AD__"]){
@@ -312,6 +320,7 @@ static void applyCustomRules(void) {
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
         if([kp isEqualToString:@"self"]&&!tg){Class tc=NSClassFromString(tvc);if(tc){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}else if(tg){tg=getObjectByKeyPath(tg,kp);}
         if(!tg){Class tc=NSClassFromString(tvc); if(tc){
+                    if(!tg){Class tc=NSClassFromString(tvc); if(tc){
             for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; id resp=w; while(resp){if([resp isKindOfClass:tc]){tg=getObjectByKeyPath(resp,kp);if(tg)break;}resp=[resp nextResponder];} if(tg)break;}
             if(!tg){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);}}
         }}
