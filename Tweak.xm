@@ -45,25 +45,18 @@ static void logMsg(NSString *m) {
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         s_log = [NSMutableString string];
-        
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 100, [UIScreen mainScreen].bounds.size.width - 20, 200)];
-        label.text = @"用手触摸App按钮，看日志";
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 80, [UIScreen mainScreen].bounds.size.width - 20, 500)];
+        label.text = @"用手触摸屏幕";
         label.textColor = [UIColor greenColor];
-        label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
-        label.font = [UIFont systemFontOfSize:13];
+        label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        label.font = [UIFont systemFontOfSize:11];
         label.numberOfLines = 0;
         label.layer.cornerRadius = 8;
         label.clipsToBounds = YES;
-        label.userInteractionEnabled = NO;
-        
         UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        w.windowLevel = CGFLOAT_MAX;
-        w.backgroundColor = [UIColor clearColor];
-        w.hidden = NO;
+        w.windowLevel = CGFLOAT_MAX; w.backgroundColor = [UIColor clearColor]; w.hidden = NO;
+        w.userInteractionEnabled = NO;
         [w addSubview:label];
-        
-        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) {
-            label.text = s_log;
-        }];
+        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { label.text = s_log; }];
     });
 }
