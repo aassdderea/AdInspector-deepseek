@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
+#import <mach/mach_time.h>
+
 @interface TestWindow : UIWindow
 @end
 static TestWindow *s_window = nil;
@@ -14,6 +16,8 @@ static TestWindow *s_window = nil;
 }
 @end
 
+typedef struct __GSEvent *GSEventRef;
+
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
@@ -23,113 +27,64 @@ static TestWindow *s_window = nil;
         if (as) { s_window = [[TestWindow alloc] initWithFrame:as.coordinateSpace.bounds]; s_window.windowScene = as; }
         
         NSMutableString *log = [NSMutableString string];
-        [log appendString:@"=== 全部触摸相关 API 测试 ===\n\n"];
+        [log appendString:@"=== GSSendEvent 触摸测试 ===\n"];
         
-        // 框架列表
-        NSArray *frameworks = @[
-            @"/System/Library/PrivateFrameworks/BackboardServices.framework/BackboardServices",
-            @"/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
-            @"/System/Library/PrivateFrameworks/BaseBoard.framework/BaseBoard",
-            @"/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices",
-            @"/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices",
-            @"/System/Library/Frameworks/UIKit.framework/UIKit",
-            @"/System/Library/Frameworks/IOKit.framework/IOKit",
-            @"/System/Library/PrivateFrameworks/Accessibility.framework/Accessibility",
-            @"/System/Library/PrivateFrameworks/AccessibilityUI.framework/AccessibilityUI",
-            @"/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities",
-            @"/System/Library/PrivateFrameworks/AXRuntime.framework/AXRuntime",
-            @"/System/Library/PrivateFrameworks/XCTestCore.framework/XCTestCore",
-            @"/System/Library/PrivateFrameworks/XCTAutomationSupport.framework/XCTAutomationSupport",
-            @"/System/Library/Frameworks/XCTest.framework/XCTest",
-        ];
+        // 动态加载
+        void (*GSSendEventPtr)(GSEventRef) = dlsym(RTLD_DEFAULT, "GSSendEvent");
+        GSEventRef (*GSEventCreateWithEventRecordPtr)(void *) = dlsym(RTLD_DEFAULT, "GSEventCreateWithEventRecord");
+        void (*GSEventSetTypePtr)(GSEventRef, int) = dlsym(RTLD_DEFAULT, "GSEventSetType");
+        void (*GSEventSetLocationPtr)(GSEventRef, CGPoint) = dlsym(RTLD_DEFAULT, "GSEventSetLocation");
+        void (*GSEventSetTimestampPtr)(GSEventRef, uint64_t) = dlsym(RTLD_DEFAULT, "GSEventSetTimestamp");
+        GSEventRef (*GSEventCreatePtr)(int, int) = dlsym(RTLD_DEFAULT, "GSEventCreate");
+        void (*GSEventSetSubtypePtr)(GSEventRef, int) = dlsym(RTLD_DEFAULT, "GSEventSetSubtype");
         
-        for (NSString *fw in frameworks) {
-            void *h = dlopen([fw UTF8String], RTLD_NOW);
-            [log appendFormat:@"%@: %@\n", [fw lastPathComponent], h ? @"✅" : @"❌"];
+        [log appendFormat:@"GSSendEvent: %@\n", GSSendEventPtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventCreateWithEventRecord: %@\n", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventSetType: %@\n", GSEventSetTypePtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventSetLocation: %@\n", GSEventSetLocationPtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventSetTimestamp: %@\n", GSEventSetTimestampPtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventCreate: %@\n", GSEventCreatePtr ? @"✅" : @"❌"];
+        [log appendFormat:@"GSEventSetSubtype: %@\n", GSEventSetSubtypePtr ? @"✅" : @"❌"];
+        
+        // BKSHIDEventSetDigitizerInfo 签名探测
+        [log appendString:@"\n=== BKSHIDEventSetDigitizerInfo 签名 ===\n"];
+        void *bk = dlsym(RTLD_DEFAULT, "BKSHIDEventSetDigitizerInfo");
+        if (bk) {
+            [log appendString:@"函数指针存在，尝试多种参数组合...\n"];
+            
+            // 尝试1: 直接传坐标
+            @try {
+                ((void (*)(int, float, float, float, float))bk)(1, 100, 200, 0, 1.0);
+                [log appendString:@"尝试1 (int,float,float,float,float): ✅ 没崩溃\n"];
+            } @catch (NSException *e) {
+                [log appendFormat:@"尝试1: ❌ %@\n", e.reason];
+            }
         }
         
-        [log appendString:@"\n=== IOKit 符号 ===\n"];
-        void *iok1 = dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
-        void *iok2 = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-        void *iok3 = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
-        void *iok4 = dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerEvent");
-        void *iok5 = dlsym(RTLD_DEFAULT, "IOHIDEventSetFloatValue");
-        void *iok6 = dlsym(RTLD_DEFAULT, "IOHIDEventSetIntegerValue");
-        void *iok7 = dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
-        [log appendFormat:@"IOHIDEventCreateDigitizerFingerEvent: %@\n", iok1 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventSystemClientCreate: %@\n", iok2 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventSystemClientDispatchEvent: %@\n", iok3 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventCreateDigitizerEvent: %@\n", iok4 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventSetFloatValue: %@\n", iok5 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventSetIntegerValue: %@\n", iok6 ? @"✅" : @"❌"];
-        [log appendFormat:@"IOHIDEventSetSenderID: %@\n", iok7 ? @"✅" : @"❌"];
-        
-        [log appendString:@"\n=== BackboardServices 符号 ===\n"];
-        NSArray *bsSyms = @[
-            @"BKSHIDEventSetDigitizerInfo", @"BKSHIDEventSetDigitizerPath",
-            @"BKSHIDEventCreateDigitizerEvent", @"BKSHIDEventSendEvent",
-            @"BKSHIDEventDigitizerPathCreate", @"BKSHIDEventDigitizerPathSetDigitizerInfo",
-            @"BKSHIDEventDigitizerPathSend", @"BKSHIDEventDigitizerPathCreateWithTouches",
-            @"BKSHIDEventDigitizerPathAttributeCreate", @"BKSHIDEventDigitizerPathAttributeSetTouch",
-            @"BKSHIDEventSetDigitizerPathIdentity", @"BKSHIDEventSend",
-            @"BKSHIDEventCreate", @"BKSHIDEventDigitizerPathAppendEvent",
-            @"BKSHIDEventDigitizerPathInfoCreate", @"BKSHIDEventDigitizerPathInfoSetValue",
-            @"BKSHIDEventDigitizerPathCreateFromTouches", @"BKSHIDigitizerPathCreate",
-            @"BKSHIDEventDigitizerPathSetIdentity", @"BKSHIDEventDigitizerPathSetPhase",
-            @"BKSHIDEventDigitizerPathSetLocation", @"BKSHIDEventDigitizerPathSetTouch",
-            @"BKSHIDEventDigitizerPathSetFlags",
-        ];
-        for (NSString *sym in bsSyms) {
-            void *f = dlsym(RTLD_DEFAULT, [sym UTF8String]);
-            [log appendFormat:@"%@: %@\n", sym, f ? @"✅" : @"❌"];
+        // 用 AXUIElement 试试
+        [log appendString:@"\n=== AXUIElement 测试 ===\n"];
+        Class AXUIElement = NSClassFromString(@"AXUIElement");
+        [log appendFormat:@"AXUIElement: %@\n", AXUIElement ? @"✅" : @"❌"];
+        Class AXUIClient = NSClassFromString(@"AXUIClient");
+        [log appendFormat:@"AXUIClient: %@\n", AXUIClient ? @"✅" : @"❌"];
+        if (AXUIElement) {
+            @try {
+                id elem = [AXUIElement performSelector:@selector(elementWithAXUIElementRef:) withObject:nil];
+                [log appendFormat:@"elementWithAXUIElementRef: %@\n", elem ? @"✅" : @"❌"];
+            } @catch (NSException *e) {
+                [log appendFormat:@"❌ %@\n", e.reason];
+            }
         }
         
-        [log appendString:@"\n=== SpringBoardServices 符号 ===\n"];
-        NSArray *sbsSyms = @[
-            @"SBSProcessIDForDisplayIdentifier", @"SBSSystemServiceClient",
-            @"SBSApplicationShortcutService", @"SBSSystemGestureManager",
-            @"SBSTouchEvent", @"SBSTouchEventService", @"SBSEventSender",
-            @"SBSDispatchEvent", @"SBSSendEvent",
-        ];
-        for (NSString *sym in sbsSyms) {
-            void *f = dlsym(RTLD_DEFAULT, [sym UTF8String]);
-            [log appendFormat:@"%@: %@\n", sym, f ? @"✅" : @"❌"];
+        // FBSSystemService
+        [log appendString:@"\n=== FBSSystemService 测试 ===\n"];
+        Class FBSSystemService = NSClassFromString(@"FBSSystemService");
+        if (FBSSystemService) {
+            id svc = [FBSSystemService performSelector:@selector(sharedService)];
+            [log appendFormat:@"FBSSystemService: %@\n", svc ? @"✅" : @"❌"];
         }
         
-        [log appendString:@"\n=== 系统手势相关符号 ===\n"];
-        NSArray *gsSyms = @[
-            @"GSCreateEvent", @"GSSendEvent", @"GSEventCreateWithEventRecord",
-            @"GSEventRecordCreate", @"GSEventSetLocation", @"GSEventSetType",
-            @"GSEventSetTimestamp", @"GSEventSetSubtype",
-            @"_UIApplicationSendEvent", @"_UISendEvent",
-            @"UIApplicationMainSendEvent", @"_UIGestureRecognizerSendEvent",
-            @"_UIApplicationHandleEvent", @"_UIApplicationHandleEventQueue",
-        ];
-        for (NSString *sym in gsSyms) {
-            void *f = dlsym(RTLD_DEFAULT, [sym UTF8String]);
-            [log appendFormat:@"%@: %@\n", sym, f ? @"✅" : @"❌"];
-        }
-        
-        [log appendString:@"\n=== 类测试 ===\n"];
-        NSArray *classes = @[
-            @"SBSyntheticTouch", @"SBSystemGestureManager", @"SBFakeTouch",
-            @"SBTouchTemplate", @"ASTTouchProvider", @"AXAssertion",
-            @"AXUIClient", @"AXUIElement", @"XCSynthesizedEventRecord",
-            @"XCPointerEventPath", @"XCTouchGesture", @"XCSynthesizedEventRecorder",
-            @"UIEventFetcher", @"UIInternalEvent", @"UIEventDispatcher",
-            @"_UIApplicationEventDispatcher", @"UIApplicationEventDispatcher",
-            @"BSAction", @"BSActionResponder", @"BSEvent",
-            @"BKTouchEvent", @"BKEvent", @"BKEventSender",
-            @"FBSSystemService", @"FBSOpenApplicationService",
-            @"GSEvent", @"GSEventRecord", @"GSEventFactory",
-        ];
-        for (NSString *cn in classes) {
-            Class cls = NSClassFromString(cn);
-            if (!cls) cls = objc_getClass([cn UTF8String]);
-            [log appendFormat:@"%@: %@\n", cn, cls ? @"✅" : @"❌"];
-        }
-        
-        // 滚动视图
+        // 显示
         UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(5, 100, [UIScreen mainScreen].bounds.size.width - 10, [UIScreen mainScreen].bounds.size.height - 120)];
         sv.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
         sv.layer.cornerRadius = 8;
