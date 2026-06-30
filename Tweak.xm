@@ -481,18 +481,94 @@ static void analyzeTouchView(UIView *v,CGPoint pt) {
 - (void)showLog:(NSString*)log{dispatch_async(dispatch_get_main_queue(),^{[self.logBuffer appendString:log];if(self.logBuffer.length>8000)[self.logBuffer deleteCharactersInRange:NSMakeRange(0,self.logBuffer.length-8000)];self.logTextView.text=self.logBuffer;if(self.logTextView.text.length>0)[self.logTextView scrollRangeToVisible:NSMakeRange(self.logTextView.text.length-1,1)];});}
 @end
 
-// ==================== Hook（通用，不绑定任何SDK）====================
+// ==================== Hook（通用）====================
 %hook UIGestureRecognizer
-- (void)setState:(UIGestureRecognizerState)state{%orig;if(state==UIGestureRecognizerStateEnded){UIView *view=self.view;if(!view)return;UIView *skipView=findSkipLabelInView(view);if(skipView){NSMutableString *log=[NSMutableString string];[log appendFormat:@"\n🔔 手势触发! %@ View:%@\n",NSStringFromClass([self class]),NSStringFromClass([view class])];@try{id d=self.delegate;if(d)[log appendFormat:@"🎯 delegate:%@\n",NSStringFromClass([d class])];}@catch(NSException *e){}[log appendString:@"══════\n"];[[AdInspectorPanel shared]showLog:log];saveToFile(log);}}}
+- (void)setState:(UIGestureRecognizerState)state {
+    %orig;
+    if (state == UIGestureRecognizerStateEnded) {
+        UIView *view = self.view;
+        if (!view) return;
+        UIView *skipView = findSkipLabelInView(view);
+        if (skipView) {
+            NSMutableString *log = [NSMutableString string];
+            [log appendFormat:@"\n🔔 手势触发! %@ View:%@\n", NSStringFromClass([self class]), NSStringFromClass([view class])];
+            @try {
+                id d = self.delegate;
+                if (d) [log appendFormat:@"🎯 delegate:%@\n", NSStringFromClass([d class])];
+            } @catch (NSException *e) {}
+            [log appendString:@"══════\n"];
+            [[AdInspectorPanel shared] showLog:log];
+            saveToFile(log);
+        }
+    }
+}
 %end
 
 %hook UIApplication
-- (void)sendEvent:(UIEvent*)e{%orig;if(e.type==UIEventTypeTouches){NSSet *ts=[e allTouches];if(ts.count>=2){BOOL as=YES;for(UITouch *t in ts){if(t.phase==UITouchPhaseEnded||t.phase==UITouchPhaseCancelled){as=NO;break;}}if(as&&!s_twoFingerStart)s_twoFingerStart=[NSDate date];if(s_twoFingerStart&&[[NSDate date]timeIntervalSinceDate:s_twoFingerStart]>=kTwoFingerHoldDuration){AdInspectorPanel *p=[AdInspectorPanel shared];if(p.hidden)[p forceShow];s_twoFingerStart=nil;s_ignoreSingleTouchUntil=[NSDate dateWithTimeIntervalSinceNow:0.5];}}else{s_twoFingerStart=nil;}if(ts.count==1){UITouch *t=[ts anyObject];if(t.phase==UITouchPhaseEnded&&t.view&&!s_twoFingerStart){if(!s_ignoreSingleTouchUntil||[[NSDate date]compare:s_ignoreSingleTouchUntil]!=NSOrderedAscending){analyzeTouchView(t.view,[t locationInView:nil]);}}}}}
+- (void)sendEvent:(UIEvent *)e {
+    %orig;
+    if (e.type == UIEventTypeTouches) {
+        NSSet *ts = [e allTouches];
+        if (ts.count >= 2) {
+            BOOL as = YES;
+            for (UITouch *t in ts) {
+                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; }
+            }
+            if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
+            if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
+                AdInspectorPanel *p = [AdInspectorPanel shared];
+                if (p.hidden) [p forceShow];
+                s_twoFingerStart = nil;
+                s_ignoreSingleTouchUntil = [NSDate dateWithTimeIntervalSinceNow:0.5];
+            }
+        } else {
+            s_twoFingerStart = nil;
+        }
+        if (ts.count == 1) {
+            UITouch *t = [ts anyObject];
+            if (t.phase == UITouchPhaseEnded && t.view && !s_twoFingerStart) {
+                if (!s_ignoreSingleTouchUntil || [[NSDate date] compare:s_ignoreSingleTouchUntil] != NSOrderedAscending) {
+                    analyzeTouchView(t.view, [t locationInView:nil]);
+                }
+            }
+        }
+    }
+}
 %end
 
 %hook UIControl
-- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e{NSLog(@"[AdInspector] 🔗 %@→%@.%@",NSStringFromClass([self class]),NSStringFromClass([t class]),NSStringFromSelector(a));%orig;}
+- (void)addTarget:(id)t action:(SEL)a forControlEvents:(UIControlEvents)e {
+    NSLog(@"[AdInspector] 🔗 %@→%@.%@", NSStringFromClass([self class]), NSStringFromClass([t class]), NSStringFromSelector(a));
+    %orig;
+}
 %end
 
-%ctor{dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{UIWindowScene *as=nil;for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}if(as){s_floatWindow=[[AdInspectorWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_floatWindow.windowScene=as;AdInspectorPanel *p=[AdInspectorPanel shared];p.frame=CGRectMake(5,180,s_floatWindow.bounds.size.width-10,380);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_floatWindow addSubview:p];s_floatWindow.panel=p;s_floatWindow.hidden=NO;}showToast(@"🔍 通用版已激活");if(isFlexingAvailable())raiseFlexingWindow();[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){applyAllSavedRules();if(s_floatWindow&&!s_isKeyboardVisible)s_floatWindow.hidden=NO;if(isFlexingAvailable())raiseFlexingWindow();}];});}
+%ctor {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindowScene *as = nil;
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
+                as = (UIWindowScene *)s;
+                break;
+            }
+        }
+        if (as) {
+            s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
+            s_floatWindow.windowScene = as;
+            AdInspectorPanel *p = [AdInspectorPanel shared];
+            p.frame = CGRectMake(5, 180, s_floatWindow.bounds.size.width - 10, 380);
+            p.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+            [s_floatWindow addSubview:p];
+            s_floatWindow.panel = p;
+            s_floatWindow.hidden = NO;
+        }
+        showToast(@"🔍 通用版已激活");
+        if (isFlexingAvailable()) raiseFlexingWindow();
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            applyAllSavedRules();
+            if (s_floatWindow && !s_isKeyboardVisible) s_floatWindow.hidden = NO;
+            if (isFlexingAvailable()) raiseFlexingWindow();
+        }];
+    });
+}
 #pragma clang diagnostic pop
