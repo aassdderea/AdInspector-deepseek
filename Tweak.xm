@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e {
@@ -14,8 +15,6 @@
                 if (gs) {
                     NSData *d = [NSData dataWithBytes:(__bridge const void *)gs length:128];
                     [d writeToFile:@"/var/mobile/Documents/gsEvent.bin" atomically:YES];
-                    
-                    // 振动提示
                     AudioServicesPlaySystemSound(1519);
                 }
             }
