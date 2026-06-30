@@ -5,7 +5,6 @@
 #import <execinfo.h>
 #import <Foundation/Foundation.h>
 #import <WebKit/WebKit.h>
-#import <mach/mach_time.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 
@@ -234,81 +233,43 @@ static UIView *findSkipLabelInView(UIView *rt) {
 static void showToast(NSString *m) { dispatch_async(dispatch_get_main_queue(),^{ UIWindow *hw=nil; for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){for(UIWindow *w in[(UIWindowScene*)s windows]){if(w.isKeyWindow){hw=w;break;}}}} if(!hw)return; UIView *t=[[UIView alloc]init]; t.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.85]; t.layer.cornerRadius=12; t.tag=9999; UILabel *l=[[UILabel alloc]init]; l.text=m; l.textColor=[UIColor whiteColor]; l.font=[UIFont boldSystemFontOfSize:14]; l.numberOfLines=0; l.textAlignment=NSTextAlignmentCenter; [t addSubview:l]; CGSize ms=CGSizeMake([UIScreen mainScreen].bounds.size.width-60,CGFLOAT_MAX); CGRect tr=[m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:l.font} context:nil]; CGFloat w=tr.size.width+30,h=tr.size.height+16; l.frame=CGRectMake(15,8,tr.size.width,tr.size.height); CGPoint c=CGPointMake(hw.bounds.size.width/2,hw.bounds.size.height-150); t.frame=CGRectMake(c.x-w/2,c.y-h/2,w,h); t.layer.zPosition=CGFLOAT_MAX; [hw addSubview:t];[UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{t.alpha=0;} completion:^(BOOL f){[t removeFromSuperview];}]; }); }
 static void triggerSkip(UIView *v,NSDictionary *r) { if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"])return; if([r[@"triggerType"]isEqualToString:@"controlEvent"]&&[v isKindOfClass:[UIControl class]]){[(UIControl*)v sendActionsForControlEvents:[r[@"controlEvent"]unsignedIntegerValue]];showToast(@"⏩ 已自动跳过");} }
 
-// ==================== 模拟点击（三层尝试）====================
+// ==================== 模拟点击 ====================
 static void performOneTap(CGFloat x, CGFloat y) {
     CGPoint pt = CGPointMake(x, y);
-    UIWindow *targetWindow = nil;
     UIView *hitView = nil;
-    for (UIWindow *w in getAllWindows()) {
-        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
-        if (w.hidden || w.alpha < 0.01) continue;
+    UIWindow *targetWindow = nil;
+    for(UIWindow *w in getAllWindows()){
+        if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue;
         CGPoint localPt = [w convertPoint:pt fromWindow:nil];
-        if (CGRectContainsPoint(w.bounds, localPt)) {
+        if(CGRectContainsPoint(w.bounds, localPt)){
             hitView = [w hitTest:localPt withEvent:nil];
-            if (hitView) { targetWindow = w; break; }
+            if(hitView){ targetWindow = w; break; }
         }
     }
-    if (!hitView || !targetWindow) {
-        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  ⚠️ (%.0f,%.0f) 无视图\n", x, y]];
-        return;
+    if(hitView && targetWindow){
+        UITouch *touch = [[UITouch alloc] init];
+        [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
+        [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
+        [touch setValue:hitView forKey:@"_view"];
+        [touch setValue:targetWindow forKey:@"_window"];
+        UIEvent *event = [[UIEvent alloc] init];
+        [hitView touchesBegan:[NSSet setWithObject:touch] withEvent:event];
+        [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
+        [hitView touchesEnded:[NSSet setWithObject:touch] withEvent:event];
+        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → %@\n", x, y, NSStringFromClass([hitView class])]];
+    }else{
+        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"  ⚠️ (%.0f,%.0f) 无视图\n", x, y]];
     }
-    
-    // 方式1: UIControl 直接触发（含父视图查找）
-    UIView *ctrlCheck = hitView;
-    for (int i = 0; i < 5 && ctrlCheck && ctrlCheck != targetWindow; i++) {
-        if ([ctrlCheck isKindOfClass:[UIControl class]]) {
-            UIControl *ctrl = (UIControl *)ctrlCheck;
-            [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
-            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → UIControl %@\n", x, y, NSStringFromClass([ctrlCheck class])]];
-            return;
-        }
-        ctrlCheck = ctrlCheck.superview;
-    }
-    
-    // 方式2: 手势识别器触发
-    UIView *gestureView = hitView;
-    for (int i = 0; i < 5 && gestureView && gestureView != targetWindow; i++) {
-        for (UIGestureRecognizer *gr in gestureView.gestureRecognizers) {
-            if (gr.enabled) {
-                [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
-                });
-                [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → 手势 %@.%@\n", x, y, NSStringFromClass([gestureView class]), NSStringFromClass([gr class])]];
-                return;
-            }
-        }
-        gestureView = gestureView.superview;
-    }
-    
-    // 方式3: UITouch 完整构造
-    UITouch *touch = [[UITouch alloc] init];
-    [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
-    [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
-    [touch setValue:hitView forKey:@"view"];
-    [touch setValue:targetWindow forKey:@"window"];
-    [touch setValue:@(1) forKey:@"tapCount"];
-    [touch setValue:@(UITouchTypeDirect) forKey:@"type"];
-    NSSet *touches = [NSSet setWithObject:touch];
-    UIEvent *event = [[UIEvent alloc] init];
-    [event setValue:touches forKey:@"_touches"];
-    [event setValue:@(UIEventTypeTouches) forKey:@"type"];
-    [event setValue:@(UIEventSubtypeNone) forKey:@"subtype"];
-    [event setValue:@(mach_absolute_time()) forKey:@"_timestamp"];
-    [hitView touchesBegan:touches withEvent:event];
-    [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
-    [hitView touchesEnded:touches withEvent:event];
-    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → UITouch %@\n", x, y, NSStringFromClass([hitView class])]];
 }
 
 static void performTapSteps(NSArray *steps, NSUInteger index) {
-    if (index >= steps.count) {
+    if(index >= steps.count) {
         showToast(@"✅ 全部点击完成");
         return;
     }
     NSString *step = [steps[index] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     NSArray *parts = [step componentsSeparatedByString:@":"];
-    if (parts.count < 2) { performTapSteps(steps, index + 1); return; }
+    if(parts.count < 2) { performTapSteps(steps, index + 1); return; }
     CGFloat x = [parts[0] floatValue];
     CGFloat y = [parts[1] floatValue];
     CGFloat delay = parts.count >= 3 ? [parts[2] floatValue] : 0;
