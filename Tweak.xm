@@ -16,8 +16,9 @@ static void logMsg(NSString *m) {
         NSSet *touches = [e allTouches];
         UITouch *t = [touches anyObject];
         if (t.phase == UITouchPhaseEnded) {
-            // dump UIEvent 的内存
-            uint8_t *bytes = (__bridge uint8_t *)e;
+            // 用 NSData 安全读取 UIEvent 内存
+            NSData *eventData = [NSData dataWithBytes:(__bridge const void *)e length:256];
+            const uint8_t *bytes = (const uint8_t *)eventData.bytes;
             NSMutableString *hex = [NSMutableString string];
             for (int i = 0; i < 256; i++) {
                 [hex appendFormat:@"%02X ", bytes[i]];
@@ -25,10 +26,10 @@ static void logMsg(NSString *m) {
             }
             logMsg([NSString stringWithFormat:@"📐 UIEvent 前256字节:\n%@", hex]);
             
-            // 同时尝试读取 _gsEvent 或 _hidEvent
             id gs = [e valueForKey:@"_gsEvent"];
             if (gs) {
-                uint8_t *b = (__bridge uint8_t *)gs;
+                NSData *gsData = [NSData dataWithBytes:(__bridge const void *)gs length:128];
+                const uint8_t *b = (const uint8_t *)gsData.bytes;
                 NSMutableString *h = [NSMutableString string];
                 for (int i = 0; i < 128; i++) {
                     [h appendFormat:@"%02X ", b[i]];
@@ -40,7 +41,6 @@ static void logMsg(NSString *m) {
     }
 }
 %end
-
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         s_log = [NSMutableString string];
