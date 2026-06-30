@@ -26,19 +26,21 @@ jobs:
     - name: Build dylib
       run: |
         export THEOS=/opt/theos
-        # 确保环境变量与 Makefile 一致
         export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
         export PREFIX=$SDKROOT/usr/
+        sudo mkdir -p $SDKROOT/usr
+        sudo ln -sf $(xcrun -f clang) $SDKROOT/usr/clang
+        sudo ln -sf $(xcrun -f clang++) $SDKROOT/usr/clang++
         make clean
         make
 
     - name: Verify output
       run: |
-        ls -lh AdInspector.dylib || (cp .theos/obj/AdInspector.dylib . 2>/dev/null || cp .theos/obj/*/AdInspector.dylib .)
-        file AdInspector.dylib
+        ls -lh .theos/obj/debug/arm64/TapSimulator.dylib || ls -lh .theos/obj/*/TapSimulator.dylib || echo "Searching..."
+        find . -name "*.dylib" -type f
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AdInspector.dylib
-        path: AdInspector.dylib
+        name: TapSimulator.dylib
+        path: "**/*.dylib"
