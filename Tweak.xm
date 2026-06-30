@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
-
+#import <objc/runtime.h>
 @interface TestWindow : UIWindow
 @end
 static TestWindow *s_window = nil;
