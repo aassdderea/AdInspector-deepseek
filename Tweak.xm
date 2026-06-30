@@ -7,6 +7,26 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 
+// ==================== IOKit RTLD_DEFAULT ====================
+typedef struct __IOHIDEvent *IOHIDEventRef;
+static BOOL s_iokitAvailable = NO;
+static IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEventPtr)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double) = NULL;
+static void * (*IOHIDEventSystemClientCreatePtr)(CFAllocatorRef) = NULL;
+static void (*IOHIDEventSystemClientDispatchEventPtr)(void *, IOHIDEventRef) = NULL;
+
+static BOOL loadIOKitFromDefault(void) {
+    static BOOL tried = NO;
+    if (tried) return s_iokitAvailable;
+    tried = YES;
+    IOHIDEventCreateDigitizerFingerEventPtr = dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
+    IOHIDEventSystemClientCreatePtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
+    IOHIDEventSystemClientDispatchEventPtr = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
+    if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
+        s_iokitAvailable = YES;
+    }
+    return s_iokitAvailable;
+}
+
 // ==================== 全局配置 ====================
 static NSArray *s_tapConfigs = nil;
 static BOOL s_isExecuting = NO;
@@ -78,115 +98,24 @@ static void showTapIndicator(CGFloat x, CGFloat y) {
     });
 }
 
-// ==================== SBSyntheticTouch 真实触摸注入 ====================
-static BOOL s_syntheticTouchAvailable = NO;
-
-static BOOL loadSyntheticTouch(void) {
-    static BOOL tried = NO;
-    if (tried) return s_syntheticTouchAvailable;
-    tried = YES;
-    // SBSyntheticTouch 在 SpringBoard 的私有框架里，但通过 RTLD_DEFAULT 可以拿到
-    Class cls = NSClassFromString(@"SBSyntheticTouch");
-    if (!cls) cls = objc_getClass("SBSyntheticTouch");
-    if (cls) {
-        s_syntheticTouchAvailable = YES;
-        [[TapControllerPanel shared] showLog:@"✅ SBSyntheticTouch 可用\n"];
-    } else {
-        [[TapControllerPanel shared] showLog:@"⚠️ SBSyntheticTouch 不可用，降级到 UIKit\n"];
-    }
-    return s_syntheticTouchAvailable;
+// ==================== IOKit 硬件点击 ====================
+static void iokitTap(CGFloat x, CGFloat y) {
+    if (!s_iokitAvailable) return;
+    CGFloat scale = [UIScreen mainScreen].scale;
+    double px = x * scale, py = y * scale;
+    uint64_t ts = mach_absolute_time();
+    void *down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
+    if (down) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, down); CFRelease(c); } CFRelease(down); }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        void *up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
+        if (up) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); }
+        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔴 IOKit (%.0f,%.0f) ✅\n", x, y]];
+        showTapIndicator(x, y);
+    });
 }
 
-static void syntheticTap(CGFloat x, CGFloat y) {
-    Class SBSyntheticTouch = NSClassFromString(@"SBSyntheticTouch");
-    if (!SBSyntheticTouch) SBSyntheticTouch = objc_getClass("SBSyntheticTouch");
-    
-    if (!SBSyntheticTouch) {
-        [[TapControllerPanel shared] showLog:@"❌ SBSyntheticTouch 类不存在\n"];
-        return;
-    }
-    
-    CGPoint pt = CGPointMake(x, y);
-    
-    // 创建合成触摸对象
-    id touchBegan = [[SBSyntheticTouch alloc] init];
-    [touchBegan setValue:@(UITouchPhaseBegan) forKey:@"phase"];
-    [touchBegan setValue:@(UITouchTypeDirect) forKey:@"touchType"];
-    [touchBegan setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
-    [touchBegan setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
-    [touchBegan setValue:@(mach_absolute_time()) forKey:@"timestamp"];
-    [touchBegan setValue:@(1) forKey:@"tapCount"];
-    
-    // 通过 SBSystemGestureManager 发送
-    id gestureManager = [NSClassFromString(@"SBSystemGestureManager") valueForKey:@"sharedInstance"];
-    if (!gestureManager) {
-        gestureManager = [NSClassFromString(@"SBSystemGestureManager") performSelector:@selector(sharedInstance)];
-    }
-    if (!gestureManager) {
-        gestureManager = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("SBSystemGestureManager"), @selector(sharedInstance));
-    }
-    
-    if (gestureManager) {
-        // 发送触摸开始
-        [gestureManager performSelector:@selector(handleTouchEvent:) withObject:touchBegan];
-        
-        // 50ms 后发送触摸结束
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            id touchEnded = [[SBSyntheticTouch alloc] init];
-            [touchEnded setValue:@(UITouchPhaseEnded) forKey:@"phase"];
-            [touchEnded setValue:@(UITouchTypeDirect) forKey:@"touchType"];
-            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
-            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
-            [touchEnded setValue:@(mach_absolute_time()) forKey:@"timestamp"];
-            [touchEnded setValue:@(1) forKey:@"tapCount"];
-            
-            [gestureManager performSelector:@selector(handleTouchEvent:) withObject:touchEnded];
-            
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟣 SBSyntheticTouch (%.0f,%.0f) ✅\n", x, y]];
-            showTapIndicator(x, y);
-        });
-        return;
-    }
-    
-    // SBSystemGestureManager 不可用，降级到直接发送触摸到窗口
-    UIWindow *targetWindow = nil;
-    UIView *hitView = nil;
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-        if (![s isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *w in [(UIWindowScene *)s windows]) {
-            if (w.hidden || w.alpha < 0.01 || [NSStringFromClass([w class]) isEqualToString:@"TapControllerWindow"]) continue;
-            CGPoint localPt = [w convertPoint:pt fromWindow:nil];
-            if (CGRectContainsPoint(w.bounds, localPt)) { hitView = [w hitTest:localPt withEvent:nil]; if (hitView) { targetWindow = w; break; } }
-        }
-        if (hitView) break;
-    }
-    if (hitView && targetWindow) {
-        // 直接调用 touchesBegan/Ended
-        [hitView touchesBegan:[NSSet setWithObject:touchBegan] withEvent:nil];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            id touchEnded = [[SBSyntheticTouch alloc] init];
-            [touchEnded setValue:@(UITouchPhaseEnded) forKey:@"phase"];
-            [touchEnded setValue:@(UITouchTypeDirect) forKey:@"touchType"];
-            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];
-            [touchEnded setValue:[NSValue valueWithCGPoint:pt] forKey:@"screenLocation"];
-            [hitView touchesEnded:[NSSet setWithObject:touchEnded] withEvent:nil];
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟣 SyntheticTouch 直接发送 (%.0f,%.0f) ✅\n", x, y]];
-            showTapIndicator(x, y);
-        });
-        return;
-    }
-    
-    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) SyntheticTouch 失败\n", x, y]];
-}
-
-// ==================== 点击入口 ====================
-static void simulateTap(CGFloat x, CGFloat y) {
-    if (s_syntheticTouchAvailable) {
-        syntheticTap(x, y);
-        return;
-    }
-    
-    // 降级到 UIKit
+// ==================== UIKit 降级点击 ====================
+static void uikitTap(CGFloat x, CGFloat y) {
     CGPoint pt = CGPointMake(x, y);
     UIWindow *targetWindow = nil;
     UIView *hitView = nil;
@@ -199,18 +128,12 @@ static void simulateTap(CGFloat x, CGFloat y) {
         }
         if (hitView) break;
     }
-    if (!hitView || !targetWindow) {
-        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) ❌ 无视图\n", x, y]];
-        return;
-    }
+    if (!hitView || !targetWindow) { [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) ❌ 无视图\n", x, y]]; return; }
     UIView *check = hitView;
     for (int i = 0; i < 5 && check && check != targetWindow; i++) {
         if ([check isKindOfClass:[UIControl class]]) {
-            @try { [(UIControl *)check sendActionsForControlEvents:UIControlEventTouchUpInside]; }
-            @catch (NSException *e) { [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ UIControl 异常: %@\n", e.reason]]; }
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) ✅\n", x, y]];
-            showTapIndicator(x, y);
-            return;
+            @try { [(UIControl *)check sendActionsForControlEvents:UIControlEventTouchUpInside]; } @catch (NSException *e) {}
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) ✅\n", x, y]]; showTapIndicator(x, y); return;
         }
         check = check.superview;
     }
@@ -218,18 +141,19 @@ static void simulateTap(CGFloat x, CGFloat y) {
     for (int i = 0; i < 5 && gv && gv != targetWindow; i++) {
         for (UIGestureRecognizer *gr in gv.gestureRecognizers) {
             if (gr.enabled) {
-                @try {
-                    [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"]; });
-                } @catch (NSException *e) {}
-                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) ✅\n", x, y]];
-                showTapIndicator(x, y);
-                return;
+                @try { [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"]; }); } @catch (NSException *e) {}
+                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) ✅\n", x, y]]; showTapIndicator(x, y); return;
             }
         }
         gv = gv.superview;
     }
     [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) 无控件/手势\n", x, y]];
+}
+
+// ==================== 点击入口 ====================
+static void simulateTap(CGFloat x, CGFloat y) {
+    if (s_iokitAvailable) { iokitTap(x, y); return; }
+    uikitTap(x, y);
 }
 
 static void executeTapSequence(NSArray *configs, NSUInteger index) {
@@ -311,11 +235,11 @@ static const NSTimeInterval kTwoFingerHoldDuration=0.5;
 
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        loadSyntheticTouch();
+        loadIOKitFromDefault();
         UIWindowScene *as=nil;
         for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}
         if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;TapControllerPanel *p=[TapControllerPanel shared];p.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,300);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_tapWindow addSubview:p];s_tapWindow.panel=p;s_tapWindow.hidden=NO;}
-        if(s_syntheticTouchAvailable){showToast(@"🟣 真实触摸模式");}else{showToast(@"🟡 UIKit 降级模式");}
+        if(s_iokitAvailable){showToast(@"🔴 IOKit 硬件注入");[[TapControllerPanel shared]showLog:@"🔴 IOKit 硬件注入已启用\n"];}else{showToast(@"🟡 UIKit 降级模式");[[TapControllerPanel shared]showLog:@"🟡 UIKit 降级模式\n"];}
     });
 }
 #pragma clang diagnostic pop
