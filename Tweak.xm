@@ -109,30 +109,35 @@ static TestWindow *s_window = nil;
 
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)e {
+    %orig;
     if (e.type == UIEventTypeTouches) {
-        NSSet *touches = [e allTouches];
-        UITouch *t = [touches anyObject];
-        if (t.phase == UITouchPhaseEnded) {
-            id gsEvent = [e valueForKey:@"_gsEvent"];
-            if (gsEvent) {
-                NSData *data = [gsEvent valueForKey:@"_eventRecord"];
-                if (!data) data = [gsEvent valueForKey:@"eventRecord"];
-                if (!data) {
-                    void *ptr = (__bridge void *)gsEvent;
-                    data = [NSData dataWithBytes:ptr length:72];
-                }
-                if (data.length >= 72) {
-                    const uint8_t *bytes = (const uint8_t *)data.bytes;
-                    NSMutableString *hex = [NSMutableString string];
-                    for (int i = 0; i < 72; i++) {
-                        [hex appendFormat:@"%02X ", bytes[i]];
+        @try {
+            NSSet *touches = [e allTouches];
+            UITouch *t = [touches anyObject];
+            if (t.phase == UITouchPhaseEnded) {
+                // 尝试从 UITouch 获取 _touchRecord
+                id record = [t valueForKey:@"_touchRecord"];
+                if (record) {
+                    // GSUITouchRecord 包含 GSEventRecord
+                    NSData *data = [record valueForKey:@"recordData"];
+                    if (!data) {
+                        // 尝试直接读 record 内存
+                        data = [NSData dataWithBytes:(__bridge void *)record length:72];
                     }
-                    logMsg([NSString stringWithFormat:@"📐 GSEventRecord 72字节:\n%@", hex]);
+                    if (data.length >= 72) {
+                        const uint8_t *bytes = (const uint8_t *)data.bytes;
+                        NSMutableString *hex = [NSMutableString string];
+                        for (int i = 0; i < 72; i++) {
+                            [hex appendFormat:@"%02X ", bytes[i]];
+                        }
+                        logMsg([NSString stringWithFormat:@"📐 TouchRecord 72字节:\n%@", hex]);
+                    }
                 }
             }
+        } @catch (NSException *ex) {
+            // 静默忽略
         }
     }
-    %orig;
 }
 %end
 
