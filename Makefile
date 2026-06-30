@@ -8,6 +8,6 @@ TWEAK_NAME = BSTest
 BSTest_FILES = Tweak.xm
 BSTest_CFLAGS = -fobjc-arc
 BSTest_FRAMEWORKS = UIKit Foundation
-BSTest_LDFLAGS = -ldl -lxpc
+BSTest_LDFLAGS = -ldl
 
 include $(THEOS_MAKE_PATH)/tweak.mk
