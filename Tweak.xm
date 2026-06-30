@@ -116,7 +116,7 @@ static void simulateTap(CGFloat x, CGFloat y) {
             uint64_t ts2 = mach_absolute_time();
             IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts2, 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
             if (up) { IOHIDEventSystemClientRef c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); }
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔴 IOKit (%.0f,%.0f)\n", x, y]];
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔴 IOKit (%.0f,%.0f) ✅\n", x, y]];
             showTapIndicator(x, y);
         });
         return;
@@ -135,14 +135,14 @@ static void simulateTap(CGFloat x, CGFloat y) {
         if (hitView) break;
     }
     if (!hitView || !targetWindow) {
-        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"  ⚠️ (%.0f,%.0f) 无视图\n", x, y]];
+        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) ❌ 无视图\n", x, y]];
         return;
     }
     UIView *check = hitView;
     for (int i = 0; i < 5 && check && check != targetWindow; i++) {
         if ([check isKindOfClass:[UIControl class]]) {
             [(UIControl *)check sendActionsForControlEvents:UIControlEventTouchUpInside];
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f)\n", x, y]];
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) ✅\n", x, y]];
             showTapIndicator(x, y);
             return;
         }
@@ -156,7 +156,7 @@ static void simulateTap(CGFloat x, CGFloat y) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
                 });
-                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f)\n", x, y]];
+                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) ✅\n", x, y]];
                 showTapIndicator(x, y);
                 return;
             }
@@ -178,7 +178,7 @@ static void simulateTap(CGFloat x, CGFloat y) {
     [hitView touchesBegan:touches withEvent:event];
     [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
     [hitView touchesEnded:touches withEvent:event];
-    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔵 UITouch (%.0f,%.0f)\n", x, y]];
+    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔵 UITouch (%.0f,%.0f) ✅\n", x, y]];
     showTapIndicator(x, y);
 }
 
