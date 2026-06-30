@@ -4,28 +4,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <Accessibility/Accessibility.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
-
-// ==================== IOKit RTLD_DEFAULT ====================
-typedef struct __IOHIDEvent *IOHIDEventRef;
-static BOOL s_iokitAvailable = NO;
-static IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEventPtr)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double) = NULL;
-static void * (*IOHIDEventSystemClientCreatePtr)(CFAllocatorRef) = NULL;
-static void (*IOHIDEventSystemClientDispatchEventPtr)(void *, IOHIDEventRef) = NULL;
-
-static BOOL loadIOKitFromDefault(void) {
-    static BOOL tried = NO;
-    if (tried) return s_iokitAvailable;
-    tried = YES;
-    IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
-    IOHIDEventSystemClientCreatePtr = (void * (*)(CFAllocatorRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-    IOHIDEventSystemClientDispatchEventPtr = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
-    if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
-        s_iokitAvailable = YES;
-    }
-    return s_iokitAvailable;
-}
 
 // ==================== 全局配置 ====================
 static NSArray *s_tapConfigs = nil;
@@ -98,62 +79,27 @@ static void showTapIndicator(CGFloat x, CGFloat y) {
     });
 }
 
-// ==================== IOKit 硬件点击 ====================
-static void iokitTap(CGFloat x, CGFloat y) {
-    if (!s_iokitAvailable) return;
-    CGFloat scale = [UIScreen mainScreen].scale;
-    double px = x * scale, py = y * scale;
-    uint64_t ts = mach_absolute_time();
-    IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
-    if (down) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, down); CFRelease(c); } CFRelease(down); }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
-        if (up) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); }
-        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🔴 IOKit (%.0f,%.0f) ✅\n", x, y]];
-        showTapIndicator(x, y);
-    });
-}
-
-// ==================== UIKit 降级点击 ====================
-static void uikitTap(CGFloat x, CGFloat y) {
-    CGPoint pt = CGPointMake(x, y);
-    UIWindow *targetWindow = nil;
-    UIView *hitView = nil;
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-        if (![s isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *w in [(UIWindowScene *)s windows]) {
-            if (w.hidden || w.alpha < 0.01 || [NSStringFromClass([w class]) isEqualToString:@"TapControllerWindow"]) continue;
-            CGPoint localPt = [w convertPoint:pt fromWindow:nil];
-            if (CGRectContainsPoint(w.bounds, localPt)) { hitView = [w hitTest:localPt withEvent:nil]; if (hitView) { targetWindow = w; break; } }
-        }
-        if (hitView) break;
-    }
-    if (!hitView || !targetWindow) { [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) ❌ 无视图\n", x, y]]; return; }
-    UIView *check = hitView;
-    for (int i = 0; i < 5 && check && check != targetWindow; i++) {
-        if ([check isKindOfClass:[UIControl class]]) {
-            @try { [(UIControl *)check sendActionsForControlEvents:UIControlEventTouchUpInside]; } @catch (NSException *e) {}
-            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟡 UIControl (%.0f,%.0f) ✅\n", x, y]]; showTapIndicator(x, y); return;
-        }
-        check = check.superview;
-    }
-    UIView *gv = hitView;
-    for (int i = 0; i < 5 && gv && gv != targetWindow; i++) {
-        for (UIGestureRecognizer *gr in gv.gestureRecognizers) {
-            if (gr.enabled) {
-                @try { [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"]; }); } @catch (NSException *e) {}
-                [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 手势 (%.0f,%.0f) ✅\n", x, y]]; showTapIndicator(x, y); return;
-            }
-        }
-        gv = gv.superview;
-    }
-    [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ (%.0f,%.0f) 无控件/手势\n", x, y]];
-}
-
-// ==================== 点击入口 ====================
+// ==================== Accessibility 触摸 ====================
 static void simulateTap(CGFloat x, CGFloat y) {
-    if (s_iokitAvailable) { iokitTap(x, y); return; }
-    uikitTap(x, y);
+    AXUIElementRef appRef = AXUIElementCreateApplication(getpid());
+    AXUIElementRef element = NULL;
+    AXError err = AXUIElementCopyElementAtPosition(appRef, x, y, &element);
+    if (err == kAXErrorSuccess && element) {
+        AXError tapErr = AXUIElementPerformAction(element, kAXPressAction);
+        if (tapErr != kAXErrorSuccess) {
+            tapErr = AXUIElementPerformAction(element, kAXTapAction);
+        }
+        if (tapErr == kAXErrorSuccess) {
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"🟢 AX (%.0f,%.0f) ✅\n", x, y]];
+            showTapIndicator(x, y);
+        } else {
+            [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ AX 失败 err=%d (%.0f,%.0f)\n", tapErr, x, y]];
+        }
+        CFRelease(element);
+    } else {
+        [[TapControllerPanel shared] showLog:[NSString stringWithFormat:@"⚠️ AX 无元素 err=%d (%.0f,%.0f)\n", err, x, y]];
+    }
+    if (appRef) CFRelease(appRef);
 }
 
 static void executeTapSequence(NSArray *configs, NSUInteger index) {
@@ -177,7 +123,7 @@ static void executeTapSequence(NSArray *configs, NSUInteger index) {
 + (instancetype)shared { static TapControllerPanel *i=nil; static dispatch_once_t t; dispatch_once(&t,^{i=[[TapControllerPanel alloc]initWithFrame:CGRectMake(5,180,[UIScreen mainScreen].bounds.size.width-10,300)];}); return i; }
 - (instancetype)initWithFrame:(CGRect)frame { self=[super initWithFrame:frame]; if(self){
     self.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.90];self.layer.cornerRadius=10;self.layer.borderWidth=1.5;self.layer.borderColor=[UIColor systemGreenColor].CGColor;self.userInteractionEnabled=YES;self.clipsToBounds=NO;self.hidden=YES;
-    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🖐 真实触摸模拟器";t.textColor=[UIColor systemGreenColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=2001;[self addSubview:t];
+    UILabel *t=[[UILabel alloc]initWithFrame:CGRectMake(12,8,220,20)];t.text=@"🖐 Accessibility 触摸";t.textColor=[UIColor systemGreenColor];t.font=[UIFont boldSystemFontOfSize:12];t.tag=2001;[self addSubview:t];
     UILabel *l1=[[UILabel alloc]initWithFrame:CGRectMake(12,34,80,20)];l1.text=@"点击序列:";l1.textColor=[UIColor whiteColor];l1.font=[UIFont systemFontOfSize:11];[self addSubview:l1];
     _configField=[[UITextField alloc]initWithFrame:CGRectMake(95,32,self.bounds.size.width-110,26)];_configField.borderStyle=UITextBorderStyleRoundedRect;_configField.backgroundColor=[UIColor darkGrayColor];_configField.textColor=[UIColor whiteColor];_configField.font=[UIFont systemFontOfSize:12];_configField.placeholder=@"x:y:秒|x2:y2:秒|...";_configField.tag=2011;_configField.delegate=self;[self addSubview:_configField];
     UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(12,66,80,26);[p1 setTitle:@"预设:左上角" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:10];p1.tag=2016;[p1 addTarget:self action:@selector(preset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
@@ -235,11 +181,11 @@ static const NSTimeInterval kTwoFingerHoldDuration=0.5;
 
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        loadIOKitFromDefault();
         UIWindowScene *as=nil;
         for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){as=(UIWindowScene*)s;break;}}
         if(as){s_tapWindow=[[TapControllerWindow alloc]initWithFrame:as.coordinateSpace.bounds];s_tapWindow.windowScene=as;TapControllerPanel *p=[TapControllerPanel shared];p.frame=CGRectMake(5,180,s_tapWindow.bounds.size.width-10,300);p.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleBottomMargin;[s_tapWindow addSubview:p];s_tapWindow.panel=p;s_tapWindow.hidden=NO;}
-        if(s_iokitAvailable){showToast(@"🔴 IOKit 硬件注入");[[TapControllerPanel shared]showLog:@"🔴 IOKit 硬件注入已启用\n"];}else{showToast(@"🟡 UIKit 降级模式");[[TapControllerPanel shared]showLog:@"🟡 UIKit 降级模式\n"];}
+        showToast(@"🟢 Accessibility 触摸已激活");
+        [[TapControllerPanel shared]showLog:@"🟢 Accessibility 触摸模式\n"];
     });
 }
 #pragma clang diagnostic pop
