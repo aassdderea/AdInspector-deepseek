@@ -38,6 +38,13 @@ static TestWindow *s_window = nil;
     return hit;
 }
 
+- (void)handlePan:(UIPanGestureRecognizer *)p {
+    UIView *v = p.view;
+    CGPoint t = [p translationInView:v];
+    v.center = CGPointMake(v.center.x + t.x, v.center.y + t.y);
+    [p setTranslation:CGPointZero inView:v];
+}
+
 - (void)doTap {
     UIView *panel = self.panel;
     UITextField *xf = (UITextField *)[panel viewWithTag:10];
@@ -47,7 +54,6 @@ static TestWindow *s_window = nil;
     double px = x * scale, py = y * scale;
     logMsg([NSString stringWithFormat:@"\n🖐 测试坐标 (%.0f, %.0f)", x, y]);
     
-    // IOKit
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         @try {
             uint64_t ts = mach_absolute_time();
@@ -60,21 +66,20 @@ static TestWindow *s_window = nil;
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"IOKit异常: %@", e.reason]); }
     }
     
-    // GSSendEvent: 尝试不同大小的 GSEventRecord
     if (GSSendEventPtr && GSEventCreateWithEventRecordPtr) {
         @try {
             int sizes[] = {72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160};
             BOOL found = NO;
             for (int i = 0; i < 12 && !found; i++) {
                 uint8_t *buf = (uint8_t *)calloc(1, sizes[i]);
-                *(int *)buf = 3001;                          // type
-                *((int *)buf + 1) = 1;                       // subtype (began)
-                *((uint64_t *)(buf + 8)) = mach_absolute_time(); // timestamp
-                *((CGFloat *)(buf + 24)) = x;                // location.x
-                *((CGFloat *)(buf + 32)) = y;                // location.y
+                *(int *)buf = 3001;
+                *((int *)buf + 1) = 1;
+                *((uint64_t *)(buf + 8)) = mach_absolute_time();
+                *((CGFloat *)(buf + 24)) = x;
+                *((CGFloat *)(buf + 32)) = y;
                 if (sizes[i] >= 56) {
-                    *((CGFloat *)(buf + 40)) = 1.0;          // pressure
-                    *((int *)(buf + 52)) = 1;                // tapCount
+                    *((CGFloat *)(buf + 40)) = 1.0;
+                    *((int *)(buf + 52)) = 1;
                 }
                 void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf);
                 if (gs) {
@@ -121,16 +126,29 @@ static TestWindow *s_window = nil;
         logMsg([NSString stringWithFormat:@"GSEventCreateWithEventRecord: %@", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"GSEventSetType: %@", GSEventSetTypePtr ? @"✅" : @"❌"]);
         
-        CGFloat pw = [UIScreen mainScreen].bounds.size.width - 20;
-        CGFloat ph = 250;
-        UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(10, 120, pw, ph)];
-        panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85]; panel.layer.cornerRadius = 10; panel.layer.borderWidth = 1; panel.layer.borderColor = [UIColor greenColor].CGColor;
-        UITextField *xf = [[UITextField alloc] initWithFrame:CGRectMake(12, 8, 80, 30)]; xf.borderStyle = UITextBorderStyleRoundedRect; xf.backgroundColor = [UIColor darkGrayColor]; xf.textColor = [UIColor whiteColor]; xf.text = @"100"; xf.tag = 10; [panel addSubview:xf];
-        UITextField *yf = [[UITextField alloc] initWithFrame:CGRectMake(100, 8, 80, 30)]; yf.borderStyle = UITextBorderStyleRoundedRect; yf.backgroundColor = [UIColor darkGrayColor]; yf.textColor = [UIColor whiteColor]; yf.text = @"200"; yf.tag = 11; [panel addSubview:yf];
-        UIButton *tb = [UIButton buttonWithType:UIButtonTypeSystem]; tb.frame = CGRectMake(190, 8, 60, 30); [tb setTitle:@"点击" forState:UIControlStateNormal]; [tb setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; [tb addTarget:s_window action:@selector(doTap) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:tb];
-        UIButton *cb = [UIButton buttonWithType:UIButtonTypeSystem]; cb.frame = CGRectMake(260, 8, 60, 30); [cb setTitle:@"复制" forState:UIControlStateNormal]; [cb setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal]; [cb addTarget:s_window action:@selector(doCopy) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:cb];
-        UIButton *clb = [UIButton buttonWithType:UIButtonTypeSystem]; clb.frame = CGRectMake(320, 8, 50, 30); [clb setTitle:@"清屏" forState:UIControlStateNormal]; [clb setTitleColor:[UIColor grayColor] forState:UIControlStateNormal]; [clb addTarget:s_window action:@selector(doClear) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:clb];
-        UITextView *lv = [[UITextView alloc] initWithFrame:CGRectMake(5, 44, pw - 10, ph - 50)]; lv.backgroundColor = [UIColor clearColor]; lv.textColor = [UIColor greenColor]; lv.font = [UIFont systemFontOfSize:10]; lv.editable = NO; lv.tag = 20; [panel addSubview:lv];
+        CGFloat pw = [UIScreen mainScreen].bounds.size.width - 60;
+        CGFloat ph = 200;
+        UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(30, 150, pw, ph)];
+        panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        panel.layer.cornerRadius = 10;
+        panel.layer.borderWidth = 1;
+        panel.layer.borderColor = [UIColor greenColor].CGColor;
+        
+        UIView *handle = [[UIView alloc] initWithFrame:CGRectMake(pw/2 - 20, 4, 40, 4)];
+        handle.backgroundColor = [UIColor colorWithWhite:0.4 alpha:0.6];
+        handle.layer.cornerRadius = 2;
+        [panel addSubview:handle];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:s_window action:@selector(handlePan:)];
+        [panel addGestureRecognizer:pan];
+        
+        UITextField *xf = [[UITextField alloc] initWithFrame:CGRectMake(12, 14, 70, 28)];
+        xf.borderStyle = UITextBorderStyleRoundedRect; xf.backgroundColor = [UIColor darkGrayColor]; xf.textColor = [UIColor whiteColor]; xf.font = [UIFont systemFontOfSize:12]; xf.text = @"100"; xf.tag = 10; [panel addSubview:xf];
+        UITextField *yf = [[UITextField alloc] initWithFrame:CGRectMake(88, 14, 70, 28)];
+        yf.borderStyle = UITextBorderStyleRoundedRect; yf.backgroundColor = [UIColor darkGrayColor]; yf.textColor = [UIColor whiteColor]; yf.font = [UIFont systemFontOfSize:12]; yf.text = @"200"; yf.tag = 11; [panel addSubview:yf];
+        UIButton *tb = [UIButton buttonWithType:UIButtonTypeSystem]; tb.frame = CGRectMake(165, 12, 55, 30); [tb setTitle:@"点击" forState:UIControlStateNormal]; [tb setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; tb.titleLabel.font = [UIFont boldSystemFontOfSize:13]; [tb addTarget:s_window action:@selector(doTap) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:tb];
+        UIButton *cb = [UIButton buttonWithType:UIButtonTypeSystem]; cb.frame = CGRectMake(225, 12, 55, 30); [cb setTitle:@"复制" forState:UIControlStateNormal]; [cb setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal]; cb.titleLabel.font = [UIFont boldSystemFontOfSize:11]; [cb addTarget:s_window action:@selector(doCopy) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:cb];
+        UIButton *clb = [UIButton buttonWithType:UIButtonTypeSystem]; clb.frame = CGRectMake(282, 12, 45, 30); [clb setTitle:@"清屏" forState:UIControlStateNormal]; [clb setTitleColor:[UIColor grayColor] forState:UIControlStateNormal]; clb.titleLabel.font = [UIFont systemFontOfSize:11]; [clb addTarget:s_window action:@selector(doClear) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:clb];
+        UITextView *lv = [[UITextView alloc] initWithFrame:CGRectMake(5, 50, pw - 10, ph - 55)]; lv.backgroundColor = [UIColor clearColor]; lv.textColor = [UIColor greenColor]; lv.font = [UIFont systemFontOfSize:10]; lv.editable = NO; lv.tag = 20; [panel addSubview:lv];
         s_window.panel = panel; [s_window addSubview:panel];
         [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { UITextView *v = (UITextView *)[panel viewWithTag:20]; if (v && ![v.text isEqualToString:s_log]) { v.text = s_log; [v scrollRangeToVisible:NSMakeRange(s_log.length - 1, 1)]; } }];
     });
