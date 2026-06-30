@@ -68,28 +68,31 @@ static TestWindow *s_window = nil;
     
     if (GSSendEventPtr && GSEventCreateWithEventRecordPtr) {
         @try {
-            int sizes[] = {72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160};
-            BOOL found = NO;
-            for (int i = 0; i < 12 && !found; i++) {
-                uint8_t *buf = (uint8_t *)calloc(1, sizes[i]);
-                *(int *)buf = 3001;
-                *((int *)buf + 1) = 1;
-                *((uint64_t *)(buf + 8)) = mach_absolute_time();
-                *((CGFloat *)(buf + 24)) = x;
-                *((CGFloat *)(buf + 32)) = y;
-                if (sizes[i] >= 56) {
-                    *((CGFloat *)(buf + 40)) = 1.0;
-                    *((int *)(buf + 52)) = 1;
-                }
-                void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf);
-                if (gs) {
-                    ((void (*)(void *))GSSendEventPtr)(gs);
-                    logMsg([NSString stringWithFormat:@"GSSendEvent(%d字节) ✅", sizes[i]]);
-                    found = YES;
-                }
-                free(buf);
-            }
-            if (!found) logMsg(@"GSSendEvent 所有大小都失败 ❌");
+            uint8_t *buf = (uint8_t *)calloc(1, 72);
+            *(int *)buf = 3001;
+            *((int *)buf + 1) = 1;
+            *((uint64_t *)(buf + 8)) = mach_absolute_time();
+            *((CGFloat *)(buf + 24)) = x;
+            *((CGFloat *)(buf + 32)) = y;
+            *((CGFloat *)(buf + 40)) = 1.0;
+            *((int *)(buf + 52)) = 1;
+            void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf);
+            if (gs) { ((void (*)(void *))GSSendEventPtr)(gs); logMsg(@"GSSendEvent began ✅"); }
+            free(buf);
+            
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                uint8_t *buf2 = (uint8_t *)calloc(1, 72);
+                *(int *)buf2 = 3001;
+                *((int *)buf2 + 1) = 3;
+                *((uint64_t *)(buf2 + 8)) = mach_absolute_time();
+                *((CGFloat *)(buf2 + 24)) = x;
+                *((CGFloat *)(buf2 + 32)) = y;
+                *((CGFloat *)(buf2 + 40)) = 1.0;
+                *((int *)(buf2 + 52)) = 1;
+                void *gs2 = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(buf2);
+                if (gs2) { ((void (*)(void *))GSSendEventPtr)(gs2); logMsg(@"GSSendEvent ended ✅"); }
+                free(buf2);
+            });
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"GSEvent异常: %@", e.reason]); }
     }
     
