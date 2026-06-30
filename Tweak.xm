@@ -32,6 +32,12 @@ static TestWindow *s_window = nil;
     return self;
 }
 
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self) return nil;
+    return hit;
+}
+
 - (void)doTap {
     UIView *panel = self.panel;
     UITextField *xf = (UITextField *)[panel viewWithTag:10];
@@ -106,14 +112,16 @@ static TestWindow *s_window = nil;
         logMsg([NSString stringWithFormat:@"GSEventCreateWithEventRecord: %@", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"GSEventSetType: %@", GSEventSetTypePtr ? @"✅" : @"❌"]);
         
-        UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(10, 80, [UIScreen mainScreen].bounds.size.width - 20, [UIScreen mainScreen].bounds.size.height - 100)];
+        CGFloat pw = [UIScreen mainScreen].bounds.size.width - 20;
+        CGFloat ph = 250;
+        UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(10, 120, pw, ph)];
         panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85]; panel.layer.cornerRadius = 10; panel.layer.borderWidth = 1; panel.layer.borderColor = [UIColor greenColor].CGColor;
         UITextField *xf = [[UITextField alloc] initWithFrame:CGRectMake(12, 8, 80, 30)]; xf.borderStyle = UITextBorderStyleRoundedRect; xf.backgroundColor = [UIColor darkGrayColor]; xf.textColor = [UIColor whiteColor]; xf.text = @"100"; xf.tag = 10; [panel addSubview:xf];
         UITextField *yf = [[UITextField alloc] initWithFrame:CGRectMake(100, 8, 80, 30)]; yf.borderStyle = UITextBorderStyleRoundedRect; yf.backgroundColor = [UIColor darkGrayColor]; yf.textColor = [UIColor whiteColor]; yf.text = @"200"; yf.tag = 11; [panel addSubview:yf];
         UIButton *tb = [UIButton buttonWithType:UIButtonTypeSystem]; tb.frame = CGRectMake(190, 8, 60, 30); [tb setTitle:@"点击" forState:UIControlStateNormal]; [tb setTitleColor:[UIColor greenColor] forState:UIControlStateNormal]; [tb addTarget:s_window action:@selector(doTap) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:tb];
         UIButton *cb = [UIButton buttonWithType:UIButtonTypeSystem]; cb.frame = CGRectMake(260, 8, 60, 30); [cb setTitle:@"复制" forState:UIControlStateNormal]; [cb setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal]; [cb addTarget:s_window action:@selector(doCopy) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:cb];
         UIButton *clb = [UIButton buttonWithType:UIButtonTypeSystem]; clb.frame = CGRectMake(320, 8, 50, 30); [clb setTitle:@"清屏" forState:UIControlStateNormal]; [clb setTitleColor:[UIColor grayColor] forState:UIControlStateNormal]; [clb addTarget:s_window action:@selector(doClear) forControlEvents:UIControlEventTouchUpInside]; [panel addSubview:clb];
-        UITextView *lv = [[UITextView alloc] initWithFrame:CGRectMake(5, 44, panel.bounds.size.width - 10, panel.bounds.size.height - 50)]; lv.backgroundColor = [UIColor clearColor]; lv.textColor = [UIColor greenColor]; lv.font = [UIFont systemFontOfSize:10]; lv.editable = NO; lv.tag = 20; [panel addSubview:lv];
+        UITextView *lv = [[UITextView alloc] initWithFrame:CGRectMake(5, 44, pw - 10, ph - 50)]; lv.backgroundColor = [UIColor clearColor]; lv.textColor = [UIColor greenColor]; lv.font = [UIFont systemFontOfSize:10]; lv.editable = NO; lv.tag = 20; [panel addSubview:lv];
         s_window.panel = panel; [s_window addSubview:panel];
         [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { UITextView *v = (UITextView *)[panel viewWithTag:20]; if (v && ![v.text isEqualToString:s_log]) { v.text = s_log; [v scrollRangeToVisible:NSMakeRange(s_log.length - 1, 1)]; } }];
     });
