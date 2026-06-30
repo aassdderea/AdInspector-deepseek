@@ -5,7 +5,6 @@
 #import <objc/message.h>
 #import <mach/mach_time.h>
 #import <mach/mach.h>
-extern "C" kern_return_t bootstrap_look_up(mach_port_t bp, const char *service_name, mach_port_t *sp);
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 
@@ -51,10 +50,7 @@ static TestWindow *s_window = nil;
     dispatch_once(&once, ^{
         static kern_return_t (*bootstrap_look_up_ptr)(mach_port_t, const char *, mach_port_t *) = NULL;
         bootstrap_look_up_ptr = (kern_return_t (*)(mach_port_t, const char *, mach_port_t *))dlsym(RTLD_DEFAULT, "bootstrap_look_up");
-        if (!bootstrap_look_up_ptr) {
-            logMsg(@"❌ bootstrap_look_up 未找到");
-            return;
-        }
+        if (!bootstrap_look_up_ptr) { logMsg(@"❌ bootstrap_look_up 未找到"); return; }
         mach_port_t bp;
         task_get_bootstrap_port(mach_task_self(), &bp);
         kern_return_t kr = bootstrap_look_up_ptr(bp, "com.apple.iohideventsystem", &hidPort);
@@ -70,10 +66,23 @@ static TestWindow *s_window = nil;
         CGFloat scale = [UIScreen mainScreen].scale;
         double px = x * scale, py = y * scale;
         @try {
+            // 用 CreateWithType(1) 创建 Active 连接
+            void *(*createActivePtr)(CFAllocatorRef, int) = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
+            void *client = NULL;
+            if (createActivePtr) {
+                client = createActivePtr(kCFAllocatorDefault, 1);
+                logMsg(@"Active client ✅");
+                
+                // 设置 entitlement
+                void *(*setPropPtr)(void *, CFStringRef, CFTypeRef) = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetProperty");
+                if (setPropPtr) {
+                    setPropPtr(client, CFSTR("Entitlements"), (__bridge CFTypeRef)@0);
+                }
+            }
+            
             uint64_t ts = mach_absolute_time();
             IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
             if (down) {
-                // 直接 mach_msg 到 HIDServer port
                 size_t es = 128;
                 mach_msg_header_t *msg = (mach_msg_header_t *)calloc(1, sizeof(mach_msg_header_t) + es);
                 msg->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
@@ -98,9 +107,10 @@ static TestWindow *s_window = nil;
                     mach_msg_send(msg);
                     free(msg);
                     CFRelease(up);
-                    logMsg(@"mach_msg up → HIDServer ✅");
+                    logMsg(@"mach_msg up ✅");
                 }
             });
+            if (client) CFRelease(client);
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"异常: %@", e.reason]); }
     }
     
