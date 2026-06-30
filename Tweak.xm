@@ -21,12 +21,20 @@ static void loadIOKitIfNeeded(void) {
     if (tried) return;
     tried = YES;
     void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
-    if (!handle) return;
+    if (!handle) handle = dlopen("/System/Library/PrivateFrameworks/IOKit.framework/IOKit", RTLD_NOW);
+    if (!handle) handle = dlopen("/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit", RTLD_NOW);
+    if (!handle) {
+        [[TapControllerPanel shared] showLog:@"❌ IOKit dlopen 失败\n"];
+        return;
+    }
     IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(handle, "IOHIDEventCreateDigitizerFingerEvent");
     IOHIDEventSystemClientCreatePtr = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(handle, "IOHIDEventSystemClientCreate");
     IOHIDEventSystemClientDispatchEventPtr = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(handle, "IOHIDEventSystemClientDispatchEvent");
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
         s_iokitAvailable = YES;
+        [[TapControllerPanel shared] showLog:@"🔴 IOKit 加载成功\n"];
+    } else {
+        [[TapControllerPanel shared] showLog:@"❌ IOKit dlsym 失败\n"];
     }
 }
 
