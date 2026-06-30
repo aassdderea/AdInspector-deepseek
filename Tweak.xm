@@ -5,6 +5,7 @@
 #import <execinfo.h>
 #import <Foundation/Foundation.h>
 #import <WebKit/WebKit.h>
+#import <mach/mach_time.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 
@@ -82,6 +83,8 @@ static BOOL isSkipText(NSString *t);
 static void collectAdClasses(NSMutableSet *classes);
 static BOOL isSystemClass(Class cls);
 static BOOL isOurToast(UIView *v);
+static void performOneTap(CGFloat x, CGFloat y);
+static void performTapSteps(NSArray *steps, NSUInteger index);
 
 // ==================== 工具函数 ====================
 static NSString *getCallStackSymbols(void) {
@@ -137,7 +140,7 @@ static void collectAdClasses(NSMutableSet *classes) {
 static BOOL isOurToast(UIView *v) {
     if ([v isKindOfClass:[AdInspectorPanel class]]) return YES;
     if (v.tag >= 1001 && v.tag <= 1030) return YES;
-    // 排除半透明深色背景的小视图（Toast）
+    if (v.tag == 9999) return YES;
     if (v.bounds.size.width < 300 && v.bounds.size.height < 60) {
         UIColor *bg = v.backgroundColor;
         if (bg) {
@@ -216,12 +219,104 @@ static UIView *findSkipLabelInView(UIView *rt) {
     if ([rt isKindOfClass:[UIButton class]]) ct=[(UIButton*)rt titleForState:UIControlStateNormal];
     else if ([rt isKindOfClass:[UILabel class]]) ct=[(UILabel*)rt text]?:[(UILabel*)rt attributedText].string;
     if (!ct) ct=rt.accessibilityLabel;
-    if (isSkipText(ct)) return rt;
+    if (isSkipText(ct)) {
+        UIView *cur = rt;
+        while (cur) {
+            NSString *cn = NSStringFromClass([cur class]);
+            if ([cn isEqualToString:@"RCTRootView"] || [cn isEqualToString:@"RCTRootContentView"] || [cn isEqualToString:@"RNCSafeAreaProvider"]) return nil;
+            cur = cur.superview;
+        }
+        return rt;
+    }
     for (UIView *sb in rt.subviews) { UIView *f=findSkipLabelInView(sb); if (f) return f; }
     return nil;
 }
 static void showToast(NSString *m) { dispatch_async(dispatch_get_main_queue(),^{ UIWindow *hw=nil; for(UIScene *s in [UIApplication sharedApplication].connectedScenes){if([s isKindOfClass:[UIWindowScene class]]&&s.activationState==UISceneActivationStateForegroundActive){for(UIWindow *w in[(UIWindowScene*)s windows]){if(w.isKeyWindow){hw=w;break;}}}} if(!hw)return; UIView *t=[[UIView alloc]init]; t.backgroundColor=[[UIColor blackColor]colorWithAlphaComponent:0.85]; t.layer.cornerRadius=12; t.tag=9999; UILabel *l=[[UILabel alloc]init]; l.text=m; l.textColor=[UIColor whiteColor]; l.font=[UIFont boldSystemFontOfSize:14]; l.numberOfLines=0; l.textAlignment=NSTextAlignmentCenter; [t addSubview:l]; CGSize ms=CGSizeMake([UIScreen mainScreen].bounds.size.width-60,CGFLOAT_MAX); CGRect tr=[m boundingRectWithSize:ms options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:l.font} context:nil]; CGFloat w=tr.size.width+30,h=tr.size.height+16; l.frame=CGRectMake(15,8,tr.size.width,tr.size.height); CGPoint c=CGPointMake(hw.bounds.size.width/2,hw.bounds.size.height-150); t.frame=CGRectMake(c.x-w/2,c.y-h/2,w,h); t.layer.zPosition=CGFLOAT_MAX; [hw addSubview:t];[UIView animateWithDuration:0.3 delay:1.5 options:UIViewAnimationOptionCurveEaseOut animations:^{t.alpha=0;} completion:^(BOOL f){[t removeFromSuperview];}]; }); }
 static void triggerSkip(UIView *v,NSDictionary *r) { if([v isDescendantOfView:[AdInspectorPanel shared]]||[NSStringFromClass([v.window class])isEqualToString:@"AdInspectorWindow"])return; if([r[@"triggerType"]isEqualToString:@"controlEvent"]&&[v isKindOfClass:[UIControl class]]){[(UIControl*)v sendActionsForControlEvents:[r[@"controlEvent"]unsignedIntegerValue]];showToast(@"⏩ 已自动跳过");} }
+
+// ==================== 模拟点击（三层尝试）====================
+static void performOneTap(CGFloat x, CGFloat y) {
+    CGPoint pt = CGPointMake(x, y);
+    UIWindow *targetWindow = nil;
+    UIView *hitView = nil;
+    for (UIWindow *w in getAllWindows()) {
+        if ([NSStringFromClass([w class]) isEqualToString:@"AdInspectorWindow"]) continue;
+        if (w.hidden || w.alpha < 0.01) continue;
+        CGPoint localPt = [w convertPoint:pt fromWindow:nil];
+        if (CGRectContainsPoint(w.bounds, localPt)) {
+            hitView = [w hitTest:localPt withEvent:nil];
+            if (hitView) { targetWindow = w; break; }
+        }
+    }
+    if (!hitView || !targetWindow) {
+        [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  ⚠️ (%.0f,%.0f) 无视图\n", x, y]];
+        return;
+    }
+    
+    // 方式1: UIControl 直接触发（含父视图查找）
+    UIView *ctrlCheck = hitView;
+    for (int i = 0; i < 5 && ctrlCheck && ctrlCheck != targetWindow; i++) {
+        if ([ctrlCheck isKindOfClass:[UIControl class]]) {
+            UIControl *ctrl = (UIControl *)ctrlCheck;
+            [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+            [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → UIControl %@\n", x, y, NSStringFromClass([ctrlCheck class])]];
+            return;
+        }
+        ctrlCheck = ctrlCheck.superview;
+    }
+    
+    // 方式2: 手势识别器触发
+    UIView *gestureView = hitView;
+    for (int i = 0; i < 5 && gestureView && gestureView != targetWindow; i++) {
+        for (UIGestureRecognizer *gr in gestureView.gestureRecognizers) {
+            if (gr.enabled) {
+                [gr setValue:@(UIGestureRecognizerStateBegan) forKey:@"state"];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [gr setValue:@(UIGestureRecognizerStateEnded) forKey:@"state"];
+                });
+                [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → 手势 %@.%@\n", x, y, NSStringFromClass([gestureView class]), NSStringFromClass([gr class])]];
+                return;
+            }
+        }
+        gestureView = gestureView.superview;
+    }
+    
+    // 方式3: UITouch 完整构造
+    UITouch *touch = [[UITouch alloc] init];
+    [touch setValue:@(UITouchPhaseBegan) forKey:@"phase"];
+    [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
+    [touch setValue:hitView forKey:@"view"];
+    [touch setValue:targetWindow forKey:@"window"];
+    [touch setValue:@(1) forKey:@"tapCount"];
+    [touch setValue:@(UITouchTypeDirect) forKey:@"type"];
+    NSSet *touches = [NSSet setWithObject:touch];
+    UIEvent *event = [[UIEvent alloc] init];
+    [event setValue:touches forKey:@"_touches"];
+    [event setValue:@(UIEventTypeTouches) forKey:@"type"];
+    [event setValue:@(UIEventSubtypeNone) forKey:@"subtype"];
+    [event setValue:@(mach_absolute_time()) forKey:@"_timestamp"];
+    [hitView touchesBegan:touches withEvent:event];
+    [touch setValue:@(UITouchPhaseEnded) forKey:@"phase"];
+    [hitView touchesEnded:touches withEvent:event];
+    [[AdInspectorPanel shared] showLog:[NSString stringWithFormat:@"  点击 (%.0f,%.0f) → UITouch %@\n", x, y, NSStringFromClass([hitView class])]];
+}
+
+static void performTapSteps(NSArray *steps, NSUInteger index) {
+    if (index >= steps.count) {
+        showToast(@"✅ 全部点击完成");
+        return;
+    }
+    NSString *step = [steps[index] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSArray *parts = [step componentsSeparatedByString:@":"];
+    if (parts.count < 2) { performTapSteps(steps, index + 1); return; }
+    CGFloat x = [parts[0] floatValue];
+    CGFloat y = [parts[1] floatValue];
+    CGFloat delay = parts.count >= 3 ? [parts[2] floatValue] : 0;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        performOneTap(x, y);
+        performTapSteps(steps, index + 1);
+    });
+}
 
 // ==================== 通用自定义规则 ====================
 static void applyCustomRules(void) {
@@ -241,38 +336,46 @@ static void applyCustomRules(void) {
             params=[paramPart componentsSeparatedByString:@":"];
         }
 
+        // ===== __TAP__ 延时模拟点击 =====
+        if([actualMethod isEqualToString:@"__TAP__"]){
+            NSString *allSteps = nil;
+            if(params && params.count==1 && [params[0] containsString:@"|"]){
+                allSteps = params[0];
+            }else if(params && params.count>=2){
+                CGFloat delay = params.count>=3 ? [params[2] floatValue] : 0;
+                allSteps = [NSString stringWithFormat:@"%@:%@:%.1f", params[0], params[1], delay];
+            }
+            if(!allSteps){showToast(@"⚠️ 格式: __TAP__,x:y:秒|x2:y2:秒");[[AdInspectorPanel shared]showLog:@"\n⚠️ 格式: __TAP__,x:y:秒|x2:y2:秒\n"];continue;}
+            NSArray *steps=[allSteps componentsSeparatedByString:@"|"];
+            [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n🖐 模拟点击 %lu 步\n",(unsigned long)steps.count]];
+            performTapSteps(steps, 0);
+            continue;
+        }
+
+        // ===== __SKIP_AD__ 通用跳过 =====
         if([actualMethod isEqualToString:@"__SKIP_AD__"]){
             UIView *skipLabel=nil;
             for(UIWindow *w in getAllWindows()){skipLabel=findSkipLabelInView(w);if(skipLabel)break;}
             if(skipLabel){
-                UIWindow *adWindow=skipLabel.window;
-                                if(adWindow&&![adWindow isKindOfClass:[AdInspectorWindow class]]&&adWindow!=s_floatWindow&&![NSStringFromClass([adWindow class]) hasPrefix:@"FLEX"]){
-                    adWindow.hidden=YES;
-                    [adWindow resignKeyWindow];
-                    [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已隐藏广告窗口: %@\n",NSStringFromClass([adWindow class])]];
-                    showToast(@"✅ 广告窗口已隐藏");
+                CGPoint pt=[skipLabel.superview convertPoint:skipLabel.center toView:skipLabel.window];
+                UIView *hitView=[skipLabel.window hitTest:pt withEvent:nil];
+                if(hitView&&(hitView==skipLabel||[hitView isDescendantOfView:skipLabel]||[skipLabel isDescendantOfView:hitView])){
+                    performOneTap(pt.x, pt.y);
+                    [[AdInspectorPanel shared]showLog:@"\n✅ 模拟点击跳过按钮\n"];
+                    showToast(@"✅ 模拟点击跳过");
                 }else{
-                    UIView *adContainer=nil;
-                    UIView *cur=skipLabel;
-                    while(cur.superview&&![cur.superview isKindOfClass:[UIWindow class]]){
-                        cur=cur.superview;
-                        NSString *cn=NSStringFromClass([cur class]);
-                        CGSize sz=cur.bounds.size;
-                        CGSize ss=[UIScreen mainScreen].bounds.size;
-                        if([cn containsString:@"Splash"]||[cn containsString:@"Ad"]||(sz.width>=ss.width*0.9&&sz.height>=ss.height*0.9)){
-                            adContainer=cur;
-                        }
-                    }
-                    if(adContainer){
-                        [adContainer removeFromSuperview];
-                        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告容器: %@\n",NSStringFromClass([adContainer class])]];
+                    UIWindow *adWindow=skipLabel.window;
+                    if(adWindow&&![adWindow isKindOfClass:[AdInspectorWindow class]]&&adWindow!=s_floatWindow&&![NSStringFromClass([adWindow class]) hasPrefix:@"FLEX"]){
+                        adWindow.hidden=YES;[adWindow resignKeyWindow];
+                        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已隐藏广告窗口: %@\n",NSStringFromClass([adWindow class])]];
+                        showToast(@"✅ 广告窗口已隐藏");
                     }else{
-                        UIView *target=skipLabel;
-                        while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview;
-                        [target removeFromSuperview];
-                        [[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除视图: %@\n",NSStringFromClass([target class])]];
+                        UIView *adContainer=nil; UIView *cur=skipLabel;
+                        while(cur.superview&&![cur.superview isKindOfClass:[UIWindow class]]){cur=cur.superview; NSString *cn=NSStringFromClass([cur class]); CGSize sz=cur.bounds.size; CGSize ss=[UIScreen mainScreen].bounds.size; if([cn containsString:@"Splash"]||[cn containsString:@"Ad"]||(sz.width>=ss.width*0.9&&sz.height>=ss.height*0.9))adContainer=cur;}
+                        if(adContainer){[adContainer removeFromSuperview];[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除广告容器: %@\n",NSStringFromClass([adContainer class])]];}
+                        else{UIView *target=skipLabel; while(target.superview&&![target.superview isKindOfClass:[UIWindow class]])target=target.superview; [target removeFromSuperview];[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n✅ 已移除视图: %@\n",NSStringFromClass([target class])]];}
+                        showToast(@"✅ 广告已移除");
                     }
-                    showToast(@"✅ 广告已移除");
                 }
             }else{
                 BOOL webDone=NO;
@@ -282,6 +385,7 @@ static void applyCustomRules(void) {
             continue;
         }
 
+        // ===== 查找目标对象 =====
         BOOL found=NO; id tg=nil;
         for(UIWindow *w in getAllWindows()){if([NSStringFromClass([w class])isEqualToString:@"AdInspectorWindow"])continue; UIView *tv=findViewOfClass(w,tvc); if(tv){tg=getObjectByKeyPath(tv,kp);if(tg){found=YES;break;}}}
         if(!found){Class tc=NSClassFromString(tvc); if(tc){SEL ss[]={@selector(sharedInstance),@selector(sharedManager),@selector(shared),@selector(defaultManager),@selector(instance)}; for(int i=0;i<5&&!tg;i++){if([tc respondsToSelector:ss[i]])tg=((id(*)(id,SEL))objc_msgSend)(tc,ss[i]);} if(!tg){id ad=[UIApplication sharedApplication].delegate;@try{tg=[ad valueForKey:tvc];}@catch(NSException *e){}}}}
@@ -295,6 +399,7 @@ static void applyCustomRules(void) {
         if(![tg respondsToSelector:m]){NSString *msg=[NSString stringWithFormat:@"❌ %@ 不响应 %@",NSStringFromClass([tg class]),actualMethod]; showToast(msg);[[AdInspectorPanel shared]showLog:[NSString stringWithFormat:@"\n%@\n",msg]];continue;}
         NSMethodSignature *sig=[tg methodSignatureForSelector:m]; NSUInteger ac=sig.numberOfArguments;
 
+        // ===== 探测模式 =====
         if(probeMode){
             NSMutableString *log=[NSMutableString stringWithFormat:@"\n🔍 %@.%@ 签名:\n",NSStringFromClass([tg class]),actualMethod];
             [log appendFormat:@"  返回值: %s\n  参数数: %lu\n",sig.methodReturnType,(unsigned long)ac];
@@ -302,6 +407,7 @@ static void applyCustomRules(void) {
             [log appendString:@"💡 去掉?号即可执行\n══════\n"];[[AdInspectorPanel shared]showLog:log]; showToast([NSString stringWithFormat:@"🔍 %@ 签名已打印",actualMethod]); continue;
         }
 
+        // ===== 执行 =====
         NSString *logMsg=nil;
         if(params && params.count>1 && ac==params.count+2){
             NSInvocation *inv=[NSInvocation invocationWithMethodSignature:sig];[inv setTarget:tg];[inv setSelector:m];
@@ -339,7 +445,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
     UILabel *l2=[[UILabel alloc]initWithFrame:CGRectMake(12,64,80,20)];l2.text=@"KVC路径:";l2.textColor=[UIColor whiteColor];l2.font=[UIFont systemFontOfSize:11];[self addSubview:l2];
     _keyPathField=[[UITextField alloc]initWithFrame:CGRectMake(95,62,self.bounds.size.width-110,26)];_keyPathField.borderStyle=UITextBorderStyleRoundedRect;_keyPathField.backgroundColor=[UIColor darkGrayColor];_keyPathField.textColor=[UIColor whiteColor];_keyPathField.font=[UIFont systemFontOfSize:12];_keyPathField.placeholder=@"如 self";_keyPathField.tag=1012;_keyPathField.delegate=self;[self addSubview:_keyPathField];
     UILabel *l3=[[UILabel alloc]initWithFrame:CGRectMake(12,94,80,20)];l3.text=@"方法名:";l3.textColor=[UIColor whiteColor];l3.font=[UIFont systemFontOfSize:11];[self addSubview:l3];
-    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?探测 / 方法,arg1:arg2 / __SKIP_AD__";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
+    _methodNameField=[[UITextField alloc]initWithFrame:CGRectMake(95,92,self.bounds.size.width-110,26)];_methodNameField.borderStyle=UITextBorderStyleRoundedRect;_methodNameField.backgroundColor=[UIColor darkGrayColor];_methodNameField.textColor=[UIColor whiteColor];_methodNameField.font=[UIFont systemFontOfSize:12];_methodNameField.placeholder=@"?探测 / 方法,参数 / __SKIP_AD__ / __TAP__,x:y:秒";_methodNameField.tag=1013;_methodNameField.delegate=self;[self addSubview:_methodNameField];
     UIButton *addBtn=[UIButton buttonWithType:UIButtonTypeSystem];addBtn.frame=CGRectMake(12,126,60,30);[addBtn setTitle:@"添加" forState:UIControlStateNormal];[addBtn setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];addBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];addBtn.tag=1014;[addBtn addTarget:self action:@selector(addCustomRuleFromFields) forControlEvents:UIControlEventTouchUpInside];[self addSubview:addBtn];
     UIButton *testBtn=[UIButton buttonWithType:UIButtonTypeSystem];testBtn.frame=CGRectMake(80,126,60,30);[testBtn setTitle:@"测试" forState:UIControlStateNormal];[testBtn setTitleColor:[UIColor yellowColor] forState:UIControlStateNormal];testBtn.titleLabel.font=[UIFont boldSystemFontOfSize:12];testBtn.tag=1015;[testBtn addTarget:self action:@selector(testCustomRules) forControlEvents:UIControlEventTouchUpInside];[self addSubview:testBtn];
     UIButton *p1=[UIButton buttonWithType:UIButtonTypeSystem];p1.frame=CGRectMake(148,126,60,30);[p1 setTitle:@"预设1" forState:UIControlStateNormal];[p1 setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];p1.titleLabel.font=[UIFont systemFontOfSize:11];p1.tag=1016;[p1 addTarget:self action:@selector(fillPreset1) forControlEvents:UIControlEventTouchUpInside];[self addSubview:p1];
@@ -403,10 +509,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
         if (ts.count >= 2) {
             BOOL as = YES;
             for (UITouch *t in ts) {
-                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
-                    as = NO;
-                    break;
-                }
+                if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) { as = NO; break; }
             }
             if (as && !s_twoFingerStart) s_twoFingerStart = [NSDate date];
             if (s_twoFingerStart && [[NSDate date] timeIntervalSinceDate:s_twoFingerStart] >= kTwoFingerHoldDuration) {
@@ -441,10 +544,7 @@ static void analyzeTouchView(UIView *v,CGPoint pt) { if(!v)return; if([v isDesce
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
-                as = (UIWindowScene *)s;
-                break;
-            }
+            if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) { as = (UIWindowScene *)s; break; }
         }
         if (as) {
             s_floatWindow = [[AdInspectorWindow alloc] initWithFrame:as.coordinateSpace.bounds];
