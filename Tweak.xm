@@ -42,19 +42,28 @@ static TestWindow *s_window = nil;
     logMsg([NSString stringWithFormat:@"\n🖐 测试坐标 (%.0f, %.0f)", x, y]);
     
     if (IOHIDEventCreateDigitizerFingerEventPtr && IOHIDEventSystemClientCreatePtr && IOHIDEventSystemClientDispatchEventPtr) {
-        uint64_t ts = mach_absolute_time();
-        IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
-        if (down) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, down); CFRelease(c); } CFRelease(down); }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
-            if (up) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); logMsg(@"IOKit ✅"); }
-        });
+        @try {
+            uint64_t ts = mach_absolute_time();
+            IOHIDEventRef down = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, ts, 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
+            if (down) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, down); CFRelease(c); } CFRelease(down); }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                IOHIDEventRef up = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, NO, px, py, 0, 1.0, 0, 0);
+                if (up) { void *c = IOHIDEventSystemClientCreatePtr(kCFAllocatorDefault); if (c) { IOHIDEventSystemClientDispatchEventPtr(c, up); CFRelease(c); } CFRelease(up); logMsg(@"IOKit ✅"); }
+            });
+        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"IOKit异常: %@", e.reason]); }
     }
-    if (GSSendEventPtr && GSEventCreateWithEventRecordPtr) {
-        void *gs = ((void *(*)(void *))GSEventCreateWithEventRecordPtr)(NULL);
-        if (gs) { ((void (*)(void *, int))GSEventSetTypePtr)(gs, 3001); ((void (*)(void *))GSSendEventPtr)(gs); logMsg(@"GSSendEvent ✅"); }
-        else { logMsg(@"GSEventCreateWithEventRecord ❌"); }
+    
+    if (GSSendEventPtr && IOHIDEventCreateDigitizerFingerEventPtr) {
+        @try {
+            IOHIDEventRef hid = IOHIDEventCreateDigitizerFingerEventPtr(kCFAllocatorDefault, mach_absolute_time(), 0, 2, 0x01, NO, YES, px, py, 0, 1.0, 0, 0);
+            if (hid) {
+                ((void (*)(void *))GSSendEventPtr)((void *)hid);
+                logMsg(@"GSSendEvent ✅");
+                CFRelease(hid);
+            }
+        } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"GSEvent异常: %@", e.reason]); }
     }
+    
     Class AXUIElement = NSClassFromString(@"AXUIElement");
     if (AXUIElement) {
         @try {
@@ -63,6 +72,7 @@ static TestWindow *s_window = nil;
             else { logMsg(@"AXUIElement ❌"); }
         } @catch (NSException *e) { logMsg([NSString stringWithFormat:@"AX: %@", e.reason]); }
     }
+    
     UIView *circle = [[UIView alloc] initWithFrame:CGRectMake(x - 15, y - 15, 30, 30)];
     circle.backgroundColor = [UIColor clearColor]; circle.layer.cornerRadius = 15; circle.layer.borderWidth = 2;
     circle.layer.borderColor = [UIColor redColor].CGColor; circle.layer.zPosition = CGFLOAT_MAX; circle.userInteractionEnabled = NO;
