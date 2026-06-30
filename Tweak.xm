@@ -127,6 +127,9 @@ static TestWindow *s_window = nil;
         IOHIDEventCreateDigitizerFingerEventPtr = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, Boolean, Boolean, double, double, double, double, double, double))dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEvent");
         
         logMsg(@"=== 符号状态 ===");
+        logMsg([NSString stringWithFormat:@"IOHIDEventSystemClientCreateWithType: %@", dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType") ? @"✅" : @"❌"]);
+        logMsg([NSString stringWithFormat:@"IOHIDEventSystemClientSetProperty: %@", dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetProperty") ? @"✅" : @"❌"]);
+        logMsg([NSString stringWithFormat:@"IOHIDEventSystemClientSetType: %@", dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetType") ? @"✅" : @"❌"]);
         logMsg([NSString stringWithFormat:@"IOHIDEventCreateDigitizerFingerEvent: %@", IOHIDEventCreateDigitizerFingerEventPtr ? @"✅" : @"❌"]);
         
         CGFloat pw = [UIScreen mainScreen].bounds.size.width - 60, ph = 200;
