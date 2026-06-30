@@ -49,9 +49,15 @@ static TestWindow *s_window = nil;
     static mach_port_t hidPort = 0;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        static kern_return_t (*bootstrap_look_up_ptr)(mach_port_t, const char *, mach_port_t *) = NULL;
+        bootstrap_look_up_ptr = dlsym(RTLD_DEFAULT, "bootstrap_look_up");
+        if (!bootstrap_look_up_ptr) {
+            logMsg(@"❌ bootstrap_look_up 未找到");
+            return;
+        }
         mach_port_t bp;
         task_get_bootstrap_port(mach_task_self(), &bp);
-        kern_return_t kr = bootstrap_look_up(bp, "com.apple.iohideventsystem", &hidPort);
+        kern_return_t kr = bootstrap_look_up_ptr(bp, "com.apple.iohideventsystem", &hidPort);
         if (kr == KERN_SUCCESS && hidPort) {
             logMsg([NSString stringWithFormat:@"🔍 IOHIDServer port: 0x%X", hidPort]);
         } else {
