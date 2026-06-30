@@ -16,8 +16,6 @@ static TestWindow *s_window = nil;
 }
 @end
 
-typedef struct __GSEvent *GSEventRef;
-
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindowScene *as = nil;
@@ -29,14 +27,13 @@ typedef struct __GSEvent *GSEventRef;
         NSMutableString *log = [NSMutableString string];
         [log appendString:@"=== GSSendEvent 触摸测试 ===\n"];
         
-        // 动态加载
-        void (*GSSendEventPtr)(GSEventRef) = dlsym(RTLD_DEFAULT, "GSSendEvent");
-        GSEventRef (*GSEventCreateWithEventRecordPtr)(void *) = dlsym(RTLD_DEFAULT, "GSEventCreateWithEventRecord");
-        void (*GSEventSetTypePtr)(GSEventRef, int) = dlsym(RTLD_DEFAULT, "GSEventSetType");
-        void (*GSEventSetLocationPtr)(GSEventRef, CGPoint) = dlsym(RTLD_DEFAULT, "GSEventSetLocation");
-        void (*GSEventSetTimestampPtr)(GSEventRef, uint64_t) = dlsym(RTLD_DEFAULT, "GSEventSetTimestamp");
-        GSEventRef (*GSEventCreatePtr)(int, int) = dlsym(RTLD_DEFAULT, "GSEventCreate");
-        void (*GSEventSetSubtypePtr)(GSEventRef, int) = dlsym(RTLD_DEFAULT, "GSEventSetSubtype");
+        void *GSSendEventPtr = dlsym(RTLD_DEFAULT, "GSSendEvent");
+        void *GSEventCreateWithEventRecordPtr = dlsym(RTLD_DEFAULT, "GSEventCreateWithEventRecord");
+        void *GSEventSetTypePtr = dlsym(RTLD_DEFAULT, "GSEventSetType");
+        void *GSEventSetLocationPtr = dlsym(RTLD_DEFAULT, "GSEventSetLocation");
+        void *GSEventSetTimestampPtr = dlsym(RTLD_DEFAULT, "GSEventSetTimestamp");
+        void *GSEventCreatePtr = dlsym(RTLD_DEFAULT, "GSEventCreate");
+        void *GSEventSetSubtypePtr = dlsym(RTLD_DEFAULT, "GSEventSetSubtype");
         
         [log appendFormat:@"GSSendEvent: %@\n", GSSendEventPtr ? @"✅" : @"❌"];
         [log appendFormat:@"GSEventCreateWithEventRecord: %@\n", GSEventCreateWithEventRecordPtr ? @"✅" : @"❌"];
@@ -46,42 +43,22 @@ typedef struct __GSEvent *GSEventRef;
         [log appendFormat:@"GSEventCreate: %@\n", GSEventCreatePtr ? @"✅" : @"❌"];
         [log appendFormat:@"GSEventSetSubtype: %@\n", GSEventSetSubtypePtr ? @"✅" : @"❌"];
         
-        // BKSHIDEventSetDigitizerInfo 签名探测
-        [log appendString:@"\n=== BKSHIDEventSetDigitizerInfo 签名 ===\n"];
+        // BKSHIDEventSetDigitizerInfo
+        [log appendString:@"\n=== BKSHIDEventSetDigitizerInfo ===\n"];
         void *bk = dlsym(RTLD_DEFAULT, "BKSHIDEventSetDigitizerInfo");
-        if (bk) {
-            [log appendString:@"函数指针存在，尝试多种参数组合...\n"];
-            
-            // 尝试1: 直接传坐标
-            @try {
-                ((void (*)(int, float, float, float, float))bk)(1, 100, 200, 0, 1.0);
-                [log appendString:@"尝试1 (int,float,float,float,float): ✅ 没崩溃\n"];
-            } @catch (NSException *e) {
-                [log appendFormat:@"尝试1: ❌ %@\n", e.reason];
-            }
-        }
+        [log appendFormat:@"符号: %@\n", bk ? @"✅" : @"❌"];
         
-        // 用 AXUIElement 试试
+        // AXUIElement
         [log appendString:@"\n=== AXUIElement 测试 ===\n"];
         Class AXUIElement = NSClassFromString(@"AXUIElement");
-        [log appendFormat:@"AXUIElement: %@\n", AXUIElement ? @"✅" : @"❌"];
-        Class AXUIClient = NSClassFromString(@"AXUIClient");
-        [log appendFormat:@"AXUIClient: %@\n", AXUIClient ? @"✅" : @"❌"];
+        [log appendFormat:@"AXUIElement类: %@\n", AXUIElement ? @"✅" : @"❌"];
         if (AXUIElement) {
             @try {
-                id elem = [AXUIElement performSelector:@selector(elementWithAXUIElementRef:) withObject:nil];
-                [log appendFormat:@"elementWithAXUIElementRef: %@\n", elem ? @"✅" : @"❌"];
+                id elem = [AXUIElement performSelector:NSSelectorFromString(@"elementWithAXUIElementRef:") withObject:nil];
+                [log appendFormat:@"调用结果: %@\n", elem ? @"✅" : @"❌"];
             } @catch (NSException *e) {
                 [log appendFormat:@"❌ %@\n", e.reason];
             }
-        }
-        
-        // FBSSystemService
-        [log appendString:@"\n=== FBSSystemService 测试 ===\n"];
-        Class FBSSystemService = NSClassFromString(@"FBSSystemService");
-        if (FBSSystemService) {
-            id svc = [FBSSystemService performSelector:@selector(sharedService)];
-            [log appendFormat:@"FBSSystemService: %@\n", svc ? @"✅" : @"❌"];
         }
         
         // 显示
@@ -91,7 +68,7 @@ typedef struct __GSEvent *GSEventRef;
         UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(8, 8, sv.bounds.size.width - 16, 0)];
         label.text = log;
         label.textColor = [UIColor greenColor];
-        label.font = [UIFont systemFontOfSize:10];
+        label.font = [UIFont systemFontOfSize:11];
         label.numberOfLines = 0;
         [label sizeToFit];
         sv.contentSize = CGSizeMake(sv.bounds.size.width, label.frame.size.height + 16);
