@@ -3,11 +3,10 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = RealTouch
+TWEAK_NAME = BSTest
 
-RealTouch_FILES = Tweak.xm
-RealTouch_CFLAGS = -fobjc-arc
-RealTouch_FRAMEWORKS = UIKit Foundation Accessibility
-RealTouch_LDFLAGS = -ldl
+BSTest_FILES = Tweak.xm
+BSTest_CFLAGS = -fobjc-arc
+BSTest_FRAMEWORKS = UIKit Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
